@@ -1,0 +1,9 @@
+/* styles.css file */
+/* Import tailwind v4 */
+@import "tailwindcss";
+
+body {
+  width: 300px;
+  height: 300px;
+  border-radius: 10px;
+}
