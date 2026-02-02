@@ -4,11 +4,13 @@
     "version": "0.0.1",
     "description": "AI-powered browser companion extension",
     "action": {
-        "default_popup": "popup.html"
+        "default_popup": "/src/popup.html"
     },
     "permissions": [
         "storage",
-        "tabs"
+        "tabs",
+        "offscreen",
+        "tts"
     ],
     "background": {
         "service_worker": "background.js"

@@ -9,16 +9,51 @@
 </head>
 
 <body>
-    <section class="flex justify-center items-center w-full h-full">
-        <img src="../asserts/oppa.png" alt="" srcset="" class="w-28 animate-bounce-slow ease-in-out">
-    </section>
-    <section class="text-center font-extrabold text-red-900 absolute bottom-1.5 left-1/2 transform -translate-x-1/2">
-        <p>Built by
-            Akpan Joseph</p>
-        <p>Namo v-0.0.1</p>
+    <section class="flex flex-col justify-center items-center w-full h-full bg-black">
+        <!-- <img src="../asserts/oppa.png" alt="" srcset="" class="w-28 animate-bounce-slow ease-in-out"> -->
+        <section>
+            <div id="visualizer" class="group relative flex justify-center items-center cursor-pointer">
+                <div
+                    class="absolute inset-0 rounded-full bg-amber-100/10 animate-[ping_3s_cubic-bezier(0,0,0.2,1)_infinite] group-[.speaking]:animate-[ping_1s_cubic-bezier(0,0,0.2,1)_infinite] group-[.speaking]:bg-amber-400/20 group-[.listening]:animate-[ping_2s_cubic-bezier(0,0,0.2,1)_infinite] group-[.listening]:bg-red-400/20">
+                </div>
+                <div
+                    class="absolute -inset-2 rounded-full border-2 border-dashed border-transparent group-[.speaking]:border-amber-200/40 group-[.speaking]:animate-[spin_4s_linear_infinite] group-[.listening]:border-red-200/40 group-[.listening]:animate-[spin_3s_linear_infinite]">
+                </div>
+                <div
+                    class="relative h-28 w-28 rounded-full flex justify-center items-center bg-white/10 backdrop-blur-md border border-white/20 shadow-lg group-[.speaking]:shadow-[0_0_40px_-5px_rgba(251,191,36,0.4)] group-[.speaking]:border-amber-200/30 transition-all duration-300">
+                    <span class="text-amber-50 font-medium tracking-wide">oppa</span>
+                </div>
+            </div>
+        </section>
+
+
+        <div id="loading" class="hidden my-4">
+            <svg class="animate-spin h-6 w-6 text-amber-600" xmlns="http://www.w3.org/2000/svg" fill="none"
+                viewBox="0 0 24 24">
+                <circle class="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" stroke-width="4"></circle>
+                <path class="opacity-75" fill="currentColor"
+                    d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4zm2 5.291A7.962 7.962 0 014 12H0c0 3.042 1.135 5.824 3 7.938l3-2.647z">
+                </path>
+            </svg>
+        </div>
+
+
+        <section class="mt-4 flex flex-col items-center">
+            <p id="text-output" class="text-md text-white px-2 py-1 font-semibold capitalize "></p>
+            <button id="retry-btn"
+                class="hidden mt-2 px-4 py-1.5 bg-red-600 text-white text-sm font-medium rounded hover:bg-red-700 transition-colors">
+                Retry Access
+            </button>
+        </section>
     </section>
 
-    <script src="../script.js"></script>
+
+    <section class="text-center font-extrabold text-red-900 absolute bottom-1.5 left-1/2 transform -translate-x-1/2">
+        <p id="status-text" class="text-center font-extrabold text-red-900 mt-4">Namo v-0.0.1</p>
+        <p>Built by Akpan Joseph</p>
+    </section>
+
+    <script type="module" src="./popup.ts"></script>
 </body>
 
 </html>

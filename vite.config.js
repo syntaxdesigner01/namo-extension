@@ -11,9 +11,11 @@ export default defineConfig({
     build: {
         rollupOptions: {
             input: {
-                background: 'src/background.js',
-                script: 'src/popup.ts',
+                background: 'src/background.ts',
                 popup: 'src/popup.html',
+                offscreen: 'src/offscreen.html',
+                permission: 'src/permission.html',
+
             },
             output: {
                 entryFileNames: '[name].js',
