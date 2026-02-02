@@ -20,6 +20,7 @@ let source: MediaStreamAudioSourceNode | null = null;
 let stream: MediaStream | null = null;
 let animationId: number | null = null;
 let isVisualizerActive = false;
+let processingTimeout: number | null = null;
 
 
 /**
@@ -111,7 +112,24 @@ function stopVisualizer() {
     }
 }
 
+function startProcessingAnimation() {
+    if (!textOutput) return;
+    textOutput.textContent = "Processing";
+    textOutput.classList.add('processing');
+}
+
+function stopProcessingState() {
+    if (textOutput) {
+        textOutput.classList.remove('processing');
+    }
+    if (processingTimeout) {
+        clearTimeout(processingTimeout);
+        processingTimeout = null;
+    }
+}
+
 recognition.onresult = (event: any) => {
+    stopProcessingState();
     const text = event.results[0][0].transcript;
 
     if (textOutput) {
@@ -127,8 +145,35 @@ recognition.onresult = (event: any) => {
 };
 
 recognition.onstart = () => {
+    stopProcessingState();
     visualizer?.classList.add('listening');
     setupVisualizer();
+    if (textOutput) {
+        textOutput.textContent = "Listening...";
+    }
+};
+
+recognition.onspeechstart = () => {
+    if (textOutput) {
+        textOutput.textContent = "Listening...";
+    }
+};
+
+recognition.onspeechend = () => {
+    startProcessingAnimation();
+
+    if (processingTimeout) clearTimeout(processingTimeout);
+    processingTimeout = window.setTimeout(() => {
+        stopProcessingState();
+        if (textOutput) {
+            textOutput.textContent = "No result. Try again.";
+        }
+        isListening = false;
+        retryBtn?.classList.remove('hidden');
+    }, 5000);
+
+    visualizer?.classList.remove('listening');
+    stopVisualizer();
 };
 
 recognition.onend = () => {
@@ -138,6 +183,7 @@ recognition.onend = () => {
 };
 
 recognition.onerror = (event: any) => {
+    stopProcessingState();
     isListening = false;
     visualizer?.classList.remove('listening');
     stopVisualizer();
@@ -147,6 +193,11 @@ recognition.onerror = (event: any) => {
             textOutput.textContent = "Microphone access denied. Please allow permissions.";
             textOutput.classList.remove("text-white");
             textOutput.classList.add("text-red-500");
+        }
+        retryBtn?.classList.remove('hidden');
+    } else if (event.error === 'no-speech') {
+        if (textOutput) {
+            textOutput.textContent = "No speech detected. Try again.";
         }
         retryBtn?.classList.remove('hidden');
     }

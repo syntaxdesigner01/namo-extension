@@ -6,6 +6,33 @@
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
     <link rel="stylesheet" href="style.css" />
     <title>Popup</title>
+    <style>
+        @keyframes dots {
+
+            0%,
+            20% {
+                content: "";
+            }
+
+            40% {
+                content: ".";
+            }
+
+            60% {
+                content: "..";
+            }
+
+            80%,
+            100% {
+                content: "...";
+            }
+        }
+
+        .processing::after {
+            content: "";
+            animation: dots 1.5s steps(1) infinite;
+        }
+    </style>
 </head>
 
 <body>
@@ -41,8 +68,8 @@
         <section class="mt-4 flex flex-col items-center">
             <p id="text-output" class="text-md text-white px-2 py-1 font-semibold capitalize "></p>
             <button id="retry-btn"
-                class="hidden mt-2 px-4 py-1.5 bg-red-600 text-white text-sm font-medium rounded hover:bg-red-700 transition-colors">
-                Retry Access
+                class="hidden mt-2 px-4 py-1 bg-red-600 text-white text-sm font-medium rounded hover:bg-red-700 transition-colors">
+                Retry
             </button>
         </section>
     </section>
