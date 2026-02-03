@@ -187,6 +187,8 @@ function detectIntent(tokens: string[]) {
         READ_PAGE_NEXT: 0,
         READ_PAGE_PREV: 0,
         READ_PAGE_STOP: 0,
+        READ_PAGE_LAST: 0,
+        READ_PAGE_FINAL: 0,
     };
 
     // ---- Greeting phrases (HIGH PRIORITY)
@@ -307,7 +309,10 @@ function detectIntent(tokens: string[]) {
         hasPhrase(tokens, ["start", "over"]) ||
         hasPhrase(tokens, ["start", "again"]) ||
         hasPhrase(tokens, ["start", "afresh"]) ||
-        hasPhrase(tokens, ["read", "from", "the", "beginning"])
+        hasPhrase(tokens, ["read", "from", "the", "beginning"]) ||
+        hasPhrase(tokens, ["read", "again"]) ||
+        hasPhrase(tokens, ["read", "this", "again"]) ||
+        hasPhrase(tokens, ["read", "from", "start"])
     ) {
         scores.READ_PAGE_RESTART += 5;
     }
@@ -335,9 +340,21 @@ function detectIntent(tokens: string[]) {
         hasPhrase(tokens, ["previous", "paragraph"]) ||
         hasPhrase(tokens, ["go", "back"]) ||
         hasPhrase(tokens, ["back", "up"]) ||
-        hasPhrase(tokens, ["previous", "part"])
+        hasPhrase(tokens, ["previous", "part"]) ||
+        hasPhrase(tokens, ["last", "paragraph"])
     ) {
         scores.READ_PAGE_PREV += 5;
+    }
+
+    if (
+        hasPhrase(tokens, ["previous", "section"]) ||
+        hasPhrase(tokens, ["read", "last", "paragraph"]) ||
+        hasPhrase(tokens, ["final", "paragraph"]) ||
+        hasPhrase(tokens, ["go", "to", "end"]) ||
+        hasPhrase(tokens, ["end", "of", "page"]) ||
+        hasPhrase(tokens, ["last", "section"])
+    ) {
+        scores.READ_PAGE_FINAL += 5;
     }
 
     if (
@@ -354,7 +371,7 @@ function detectIntent(tokens: string[]) {
         if (["hi", "hello", "hey"].includes(t)) scores.GREET += 3;
         if (t === "open") scores.OPEN_SITE += 2;
         if (["search", "find"].includes(t)) scores.SEARCH_WEB += 2;
-        if (t === "play") scores.PLAY_MUSIC += 2;
+        if (t === "play" && !tokens.includes("read")) scores.PLAY_MUSIC += 2;
         if (t === "youtube") scores.PLAY_YOUTUBE += 2;
         if (["pause", "resume", "stop"].includes(t)) scores.MEDIA_CONTROL += 2;
         if (t === "image") scores.GET_IMAGE += 2;
@@ -892,6 +909,40 @@ const TASK_REGISTRY: Task[] = [
             }
             stopReadingInternal();
             await readFromIndex(prevIndex, false);
+        },
+    },
+    {
+        intent: "READ_PAGE_LAST",
+        minConfidence: 2,
+        action: async () => {
+            if (!readingState.chunks.length) {
+                speak("I don't have a page ready to read yet.");
+                return;
+            }
+            const lastIndex = readingState.chunks.length - 1;
+            if (lastIndex < 0) {
+                speak("You're already at the beginning.");
+                return;
+            }
+            stopReadingInternal();
+            await readFromIndex(lastIndex, false);
+        },
+    },
+    {
+        intent: "READ_PAGE_FINAL",
+        minConfidence: 2,
+        action: async () => {
+            if (!readingState.chunks.length) {
+                speak("I don't have a page ready to read yet.");
+                return;
+            }
+            const lastIndex = readingState.chunks.length - 1;
+            if (lastIndex < 0) {
+                speak("You're already at the beginning.");
+                return;
+            }
+            stopReadingInternal();
+            await readFromIndex(lastIndex, false);
         },
     },
     {
