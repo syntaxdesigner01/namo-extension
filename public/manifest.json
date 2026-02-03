@@ -10,7 +10,9 @@
         "storage",
         "tabs",
         "offscreen",
-        "tts"
+        "tts",
+        "scripting",
+        "activeTab"
     ],
     "background": {
         "service_worker": "background.js"

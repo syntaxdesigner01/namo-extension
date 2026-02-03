@@ -37,6 +37,12 @@ function stopSpeaking() {
     visualizer?.classList.remove('speaking');
 }
 
+function stopListening() {
+    if (isListening) {
+        recognition.stop();
+    }
+}
+
 function startListening() {
     if (!isListening) {
         try {
@@ -145,6 +151,7 @@ recognition.onresult = (event: any) => {
 };
 
 recognition.onstart = () => {
+    isListening = true;
     stopProcessingState();
     visualizer?.classList.add('listening');
     setupVisualizer();
@@ -168,7 +175,7 @@ recognition.onspeechend = () => {
         if (textOutput) {
             textOutput.textContent = "No result. Try again.";
         }
-        isListening = false;
+        // `isListening` is set to false in the `onend` handler.
         retryBtn?.classList.remove('hidden');
     }, 5000);
 
@@ -184,7 +191,6 @@ recognition.onend = () => {
 
 recognition.onerror = (event: any) => {
     stopProcessingState();
-    isListening = false;
     visualizer?.classList.remove('listening');
     stopVisualizer();
     console.error("Recognition error:", event.error);
@@ -206,7 +212,12 @@ recognition.onerror = (event: any) => {
 // Ensure the element exists before adding event listeners or calling functions.
 if (visualizer) {
     visualizer.addEventListener('click', () => {
-        visualizer.classList.toggle('speaking');
+        chrome.runtime.sendMessage({ type: "OPPA_STOP_ALL" }, () => { });
+        stopSpeaking();
+        stopProcessingState();
+        visualizer.classList.remove('speaking');
+        visualizer.classList.add('listening');
+        startListening();
     });
 } else {
     console.error('Error: Visualizer element with ID "visualizer" not found.');
@@ -240,14 +251,18 @@ document.addEventListener("DOMContentLoaded", () => {
         console.warn('Background script did not respond within timeout period.');
     }, 5000); // 5 seconds timeout
 
-    chrome.runtime.sendMessage({ type: "OPPA_POPUP_OPENED" }, () => {
+    chrome.runtime.sendMessage({ type: "OPPA_POPUP_OPENED" }, (response) => {
         clearTimeout(timeoutId);
         loading?.classList.add('hidden');
         startChat?.classList.remove('hidden');
+        if (response?.status === "ready_to_listen") {
+            startListening();
+        }
     });
 
     chrome.runtime.onMessage.addListener((msg) => {
         if (msg.type === "OPPA_SPEECH_START") {
+            stopListening();
             startSpeaking();
             speech?.classList.remove('hidden');
             listen?.classList.add('hidden');
@@ -259,12 +274,4 @@ document.addEventListener("DOMContentLoaded", () => {
             startListening();
         }
     });
-
-    if (navigator.onLine) {
-        startListening();
-        startChat?.classList.add('hidden');
-        listen?.classList.remove('hidden');
-    } else {
-        alert('oppa needs internet connection to work');
-    }
 });
