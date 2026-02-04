@@ -7,11 +7,11 @@ let lastFetchTime = 0;
 let cachedNewsOptions: { scope: string; topic?: { code: string; label: string } | null } | null = null;
 
 chrome.storage.local.get(["latestNews", "lastFetchTime", "cachedNewsOptions"], (result) => {
-    if (result.latestNews && Array.isArray(result.latestNews)) {
-        latestNews = result.latestNews as typeof latestNews;
+    if (result.latestNews) {
+        latestNews = result.latestNews as { title: string; link: string; summary: string }[];
     }
     if (result.lastFetchTime) lastFetchTime = result.lastFetchTime as number;
-    if (result.cachedNewsOptions) cachedNewsOptions = result.cachedNewsOptions as typeof cachedNewsOptions;
+    if (result.cachedNewsOptions) cachedNewsOptions = result.cachedNewsOptions as { scope: string; topic?: { code: string; label: string } | null } | null;
 });
 const newsState = {
     pending: false,
@@ -19,6 +19,8 @@ const newsState = {
     topic: null as { code: string; label: string } | null,
     lastReadIndex: null as number | null,
     pendingFullChoice: false,
+    isReadingList: false,
+    stopReadingList: false,
 };
 
 console.log("Oppa background running");
@@ -92,15 +94,11 @@ async function withListenSuppressed<T>(fn: () => Promise<T>) {
     }
 }
 
-async function readNewsSummaryThenFull(item: { title: string; summary: string; link: string }, skipSummary = false) {
-    if (!skipSummary) {
-        const summary = item.summary
-            ? `${item.title}. ${item.summary}`
-            : `${item.title}. I can open the full article if you'd like.`;
-        await speakSequential([summary, "Opening the full article and reading it."]);
-    } else {
-        speak("Opening the full article and reading it.");
-    }
+async function readNewsSummaryThenFull(item: { title: string; summary: string; link: string }) {
+    const summary = item.summary
+        ? `${item.title}. ${item.summary}`
+        : `${item.title}. I can open the full article if you'd like.`;
+    await speakSequential([summary, "Opening the full article and reading it."]);
 
     chrome.tabs.create({ url: item.link, active: true }, (tab) => {
         if (!tab?.id) return;
@@ -275,6 +273,23 @@ function buildNewsRssUrl(options: { scope: "local" | "international"; topic?: { 
     return `${base}?hl=${encodeURIComponent(hl)}&gl=${encodeURIComponent(gl)}&ceid=${encodeURIComponent(ceid)}`;
 }
 
+async function fetchWithRetry(url: string, options: RequestInit = {}, retries = 3, timeout = 10000): Promise<Response> {
+    for (let i = 0; i < retries; i++) {
+        try {
+            const controller = new AbortController();
+            const id = setTimeout(() => controller.abort(), timeout);
+            const res = await fetch(url, { ...options, signal: controller.signal });
+            clearTimeout(id);
+            if (!res.ok) throw new Error(`HTTP ${res.status}`);
+            return res;
+        } catch (e: any) {
+            if (i === retries - 1) throw e;
+            await new Promise(resolve => setTimeout(resolve, 1000));
+        }
+    }
+    throw new Error("Failed to fetch");
+}
+
 async function fetchNews(options: { scope: "local" | "international"; topic?: { code: string; label: string } | null }) {
     const CACHE_DURATION = 10 * 60 * 1000; // 10 minutes
     const now = Date.now();
@@ -293,11 +308,7 @@ async function fetchNews(options: { scope: "local" | "international"; topic?: { 
         const countryCode = options.scope === "local" ? await getCountryCode() : null;
         const rssUrl = buildNewsRssUrl({ ...options, countryCode });
 
-        const controller = new AbortController();
-        const timeoutId = setTimeout(() => controller.abort(), 10000);
-        const response = await fetch(`https://api.rss2json.com/v1/api.json?rss_url=${encodeURIComponent(rssUrl)}`, { signal: controller.signal });
-        clearTimeout(timeoutId);
-
+        const response = await fetchWithRetry(`https://api.rss2json.com/v1/api.json?rss_url=${encodeURIComponent(rssUrl)}`);
         const contentType = response.headers.get("content-type") || "";
         let data: any = null;
         if (contentType.includes("application/json")) {
@@ -319,10 +330,7 @@ async function fetchNews(options: { scope: "local" | "international"; topic?: { 
             }));
         } else {
             // Fallback: fetch RSS XML directly and parse minimal fields
-            const controllerFallback = new AbortController();
-            const timeoutIdFallback = setTimeout(() => controllerFallback.abort(), 10000);
-            const rssResp = await fetch(rssUrl, { signal: controllerFallback.signal });
-            clearTimeout(timeoutIdFallback);
+            const rssResp = await fetchWithRetry(rssUrl);
             const rssText = await rssResp.text();
             const items = rssText.match(/<item>[\s\S]*?<\/item>/gi) || [];
             latestNews = items.slice(0, 6).map((raw) => {
@@ -346,13 +354,9 @@ async function fetchNews(options: { scope: "local" | "international"; topic?: { 
         } else {
             speak("I couldn't find any news.");
         }
-    } catch (e: any) {
+    } catch (e) {
         console.error("News fetch error:", e);
-        if (e.name === "AbortError") {
-            speak("The request timed out. Please try again later.");
-        } else {
-            speak("Sorry, I couldn't get the news.");
-        }
+        speak("Sorry, I couldn't get the news.");
     }
 }
 
@@ -1830,7 +1834,7 @@ const TASK_REGISTRY: Task[] = [
             if (index !== null && index !== undefined && latestNews[index]) {
                 const item = latestNews[index];
                 newsState.lastReadIndex = index;
-                await readNewsSummaryAndAsk(item);
+                await readNewsSummaryThenFull(item);
             } else {
                 speak("I couldn't find that news item.");
             }
@@ -1899,8 +1903,24 @@ const TASK_REGISTRY: Task[] = [
                 speak("I haven't fetched any news yet. Ask for the latest news first.");
                 return;
             }
-            const chunks = latestNews.map((item, i) => `${i + 1}. ${item.title}.`);
-            await speakSequential(chunks);
+
+            newsState.isReadingList = true;
+            newsState.stopReadingList = false;
+
+            for (let i = 0; i < latestNews.length; i++) {
+                if (newsState.stopReadingList) break;
+
+                newsState.lastReadIndex = i;
+                const item = latestNews[i];
+                const text = `${i + 1}. ${item.title}.`;
+
+                await new Promise<void>((resolve) => {
+                    speak(text, resolve);
+                });
+            }
+
+            newsState.isReadingList = false;
+            newsState.stopReadingList = false;
         }
     },
     {
@@ -1921,6 +1941,10 @@ const TASK_REGISTRY: Task[] = [
         intent: "NEWS_NEXT",
         minConfidence: 3,
         action: async () => {
+            if (newsState.isReadingList) {
+                chrome.tts.stop();
+                return;
+            }
             if (latestNews.length === 0) {
                 speak("I haven't fetched any news yet. Ask for the latest news first.");
                 return;
@@ -1959,6 +1983,9 @@ const TASK_REGISTRY: Task[] = [
         intent: "NEWS_STOP",
         minConfidence: 2,
         action: () => {
+            if (newsState.isReadingList) {
+                newsState.stopReadingList = true;
+            }
             stopReadingInternal();
             chrome.tts.stop();
             speak("Stopped the news.");
@@ -2195,7 +2222,7 @@ function handleCommand(command: string) {
             newsState.pendingFullChoice = false;
             const index = newsState.lastReadIndex;
             if (index !== null && index !== undefined && latestNews[index]) {
-                readNewsSummaryThenFull(latestNews[index], true);
+                readNewsSummaryThenFull(latestNews[index]);
                 return;
             }
         }
