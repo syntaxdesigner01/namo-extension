@@ -2,7 +2,24 @@
 // Session State
 // ===============================
 let hasGreetedThisSession = false;
-let latestNews: { title: string; link: string; description: string }[] = [];
+let latestNews: { title: string; link: string; summary: string }[] = [];
+let lastFetchTime = 0;
+let cachedNewsOptions: { scope: string; topic?: { code: string; label: string } | null } | null = null;
+
+chrome.storage.local.get(["latestNews", "lastFetchTime", "cachedNewsOptions"], (result) => {
+    if (result.latestNews && Array.isArray(result.latestNews)) {
+        latestNews = result.latestNews as typeof latestNews;
+    }
+    if (result.lastFetchTime) lastFetchTime = result.lastFetchTime as number;
+    if (result.cachedNewsOptions) cachedNewsOptions = result.cachedNewsOptions as typeof cachedNewsOptions;
+});
+const newsState = {
+    pending: false,
+    scope: null as "local" | "international" | null,
+    topic: null as { code: string; label: string } | null,
+    lastReadIndex: null as number | null,
+    pendingFullChoice: false,
+};
 
 console.log("Oppa background running");
 
@@ -17,17 +34,31 @@ const OPPA_VOICE = {
     voiceName: "Google UK English Female",
 };
 
-function speak(text: string, onEnd?: () => void, options?: { interrupt?: boolean }) {
+let suppressListenReady = false;
+let listenSuppressCount = 0;
+
+function speak(text: string, onEnd?: () => void, options?: { interrupt?: boolean; suppressListen?: boolean }) {
     if (options?.interrupt !== false) {
         chrome.tts.stop();
     }
 
+    if (options?.suppressListen) {
+        listenSuppressCount += 1;
+    }
+
+    chrome.runtime.sendMessage({ type: "OPPA_LISTEN_STATUS", status: "speaking" }).catch(() => { });
     chrome.runtime.sendMessage({ type: "OPPA_SPEECH_START" }).catch(() => { });
     chrome.tts.speak(text, {
         ...OPPA_VOICE,
         onEvent: (event) => {
             if (event.type === "end" || event.type === "cancelled") {
                 chrome.runtime.sendMessage({ type: "OPPA_SPEECH_END" }).catch(() => { });
+                if (options?.suppressListen) {
+                    listenSuppressCount = Math.max(0, listenSuppressCount - 1);
+                }
+                if (!suppressListenReady && listenSuppressCount === 0) {
+                    chrome.runtime.sendMessage({ type: "OPPA_LISTEN_STATUS", status: "ready_to_listen" }).catch(() => { });
+                }
                 if (onEnd) onEnd();
             }
         },
@@ -36,6 +67,293 @@ function speak(text: string, onEnd?: () => void, options?: { interrupt?: boolean
 
 function openTab(url: string) {
     chrome.tabs.create({ url });
+}
+
+async function speakSequential(chunks: string[]) {
+    await withListenSuppressed(async () => {
+        for (const chunk of chunks) {
+            await new Promise<void>((resolve) => {
+                speak(chunk, resolve, { interrupt: false });
+            });
+        }
+    });
+}
+
+async function withListenSuppressed<T>(fn: () => Promise<T>) {
+    const prev = suppressListenReady;
+    suppressListenReady = true;
+    try {
+        return await fn();
+    } finally {
+        suppressListenReady = prev;
+        if (!suppressListenReady && listenSuppressCount === 0) {
+            chrome.runtime.sendMessage({ type: "OPPA_LISTEN_STATUS", status: "ready_to_listen" }).catch(() => { });
+        }
+    }
+}
+
+async function readNewsSummaryThenFull(item: { title: string; summary: string; link: string }, skipSummary = false) {
+    if (!skipSummary) {
+        const summary = item.summary
+            ? `${item.title}. ${item.summary}`
+            : `${item.title}. I can open the full article if you'd like.`;
+        await speakSequential([summary, "Opening the full article and reading it."]);
+    } else {
+        speak("Opening the full article and reading it.");
+    }
+
+    chrome.tabs.create({ url: item.link, active: true }, (tab) => {
+        if (!tab?.id) return;
+        const tabId = tab.id;
+        const onUpdated = (updatedId: number, info: any) => {
+            if (updatedId !== tabId || info.status !== "complete") return;
+            chrome.tabs.onUpdated.removeListener(onUpdated);
+            readTabById(tabId, item.link);
+        };
+        chrome.tabs.onUpdated.addListener(onUpdated);
+    });
+}
+
+async function readNewsSummaryAndAsk(item: { title: string; summary: string; link: string }) {
+    const summary = item.summary
+        ? `${item.title}. ${item.summary}`
+        : `${item.title}. I couldn't find a summary, but I can open the full article.`;
+    await speakSequential([summary, "Would you like me to read the full article?"]);
+    newsState.pendingFullChoice = true;
+}
+
+async function readTabById(tabId: number, url?: string) {
+    try {
+        const results = await chrome.scripting.executeScript({
+            target: { tabId },
+            func: () => {
+                const root =
+                    document.querySelector("main") ||
+                    document.querySelector("article") ||
+                    document.querySelector('[role="main"]') ||
+                    document.body;
+
+                if (!root) return "";
+
+                const REMOVE_SELECTORS = [
+                    "script",
+                    "style",
+                    "noscript",
+                    "nav",
+                    "header",
+                    "footer",
+                    "aside",
+                    "aside *",
+                    "form",
+                    "button",
+                    "input",
+                    "select",
+                    "textarea",
+                    "label",
+                    "figure",
+                    "figcaption",
+                    "svg",
+                    "canvas",
+                    "iframe",
+                    "video",
+                    "audio",
+                    "a",
+                    "[role='navigation']",
+                    "[role='banner']",
+                    "[role='contentinfo']",
+                    "[role='search']",
+                    "[aria-hidden='true']",
+                    // Common cookie/consent banners and overlays
+                    "[id*='cookie']",
+                    "[class*='cookie']",
+                    "[id*='consent']",
+                    "[class*='consent']",
+                    "[id*='gdpr']",
+                    "[class*='gdpr']",
+                    "[id*='privacy']",
+                    "[class*='privacy']",
+                    "[class*='banner']",
+                    "[class*='overlay']",
+                    "[class*='modal']",
+                    "[role='dialog']",
+                    // Common ads / sidebar / promo blocks
+                    "[id*='ad']",
+                    "[class*='ad']",
+                    "[id*='ads']",
+                    "[class*='ads']",
+                    "[id*='sponsor']",
+                    "[class*='sponsor']",
+                    "[class*='promo']",
+                    "[class*='sidebar']",
+                    "[id*='sidebar']",
+                    "[class*='related']",
+                ];
+
+                root.querySelectorAll(REMOVE_SELECTORS.join(",")).forEach((el) => el.remove());
+
+                const walker = document.createTreeWalker(
+                    root,
+                    NodeFilter.SHOW_TEXT,
+                    {
+                        acceptNode(node) {
+                            const text = (node.nodeValue || "").trim();
+                            if (!text) return NodeFilter.FILTER_REJECT;
+                            const parent = node.parentElement;
+                            if (!parent) return NodeFilter.FILTER_REJECT;
+                            const tag = parent.tagName.toLowerCase();
+                            if (["script", "style", "noscript", "nav", "header", "footer", "aside", "form", "button", "input", "select", "textarea", "label", "a"].includes(tag)) {
+                                return NodeFilter.FILTER_REJECT;
+                            }
+                            return NodeFilter.FILTER_ACCEPT;
+                        },
+                    }
+                );
+
+                const parts: string[] = [];
+                let current: Node | null = walker.nextNode();
+                while (current) {
+                    parts.push((current.nodeValue || "").trim());
+                    current = walker.nextNode();
+                }
+
+                const text = parts.join(" ");
+                return text.replace(/\s\s+/g, " ").trim();
+            },
+        });
+
+        const text = results?.[0]?.result;
+        if (!text || text.length < 50) {
+            speak("I couldn't find readable text on this page.");
+            return;
+        }
+
+        readingState.sourceUrl = url || "";
+        readingState.chunks = splitIntoParagraphs(text);
+        readingState.index = 0;
+        readingState.isReading = false;
+
+        if (!readingState.chunks.length) {
+            speak("I couldn't find readable text on this page.");
+            return;
+        }
+
+        stopReadingInternal();
+        await readFromIndex(0, true);
+    } catch (error) {
+        console.error("Reading page failed:", error);
+        speak("Sorry, I couldn't read this page. It may be restricted.");
+    }
+}
+
+async function getCountryCode() {
+    try {
+        const controller = new AbortController();
+        const timeoutId = setTimeout(() => controller.abort(), 5000);
+        const response = await fetch("https://ipapi.co/json/", { signal: controller.signal });
+        clearTimeout(timeoutId);
+        if (!response.ok) return null;
+        const data = await response.json();
+        return (data?.country_code || "").toString().toUpperCase() || null;
+    } catch {
+        return null;
+    }
+}
+
+function buildNewsRssUrl(options: { scope: "local" | "international"; topic?: { code: string; label: string } | null; countryCode?: string | null }) {
+    const cc = (options.countryCode || "US").toUpperCase();
+    const isLocal = options.scope === "local";
+    const topicCode = options.topic?.code || (isLocal ? "" : "WORLD");
+
+    const base = topicCode
+        ? `https://news.google.com/rss/headlines/section/topic/${topicCode}`
+        : "https://news.google.com/rss";
+
+    const hl = isLocal ? `en-${cc}` : "en";
+    const gl = isLocal ? cc : "US";
+    const ceid = isLocal ? `${cc}:en` : "US:en";
+
+    return `${base}?hl=${encodeURIComponent(hl)}&gl=${encodeURIComponent(gl)}&ceid=${encodeURIComponent(ceid)}`;
+}
+
+async function fetchNews(options: { scope: "local" | "international"; topic?: { code: string; label: string } | null }) {
+    const CACHE_DURATION = 10 * 60 * 1000; // 10 minutes
+    const now = Date.now();
+    const isSameOptions = cachedNewsOptions &&
+        cachedNewsOptions.scope === options.scope &&
+        ((!cachedNewsOptions.topic && !options.topic) || (cachedNewsOptions.topic?.code === options.topic?.code));
+
+    if (latestNews.length > 0 && isSameOptions && (now - lastFetchTime < CACHE_DURATION)) {
+        const titles = latestNews.map((n) => n.title);
+        speak(`Here are the cached headlines: ${titles.join(". ")}. You can ask me to read a specific one or open all of them.`);
+        return;
+    }
+
+    speak(`Fetching ${options.scope}${options.topic ? ` ${options.topic.label}` : ""} news.`);
+    try {
+        const countryCode = options.scope === "local" ? await getCountryCode() : null;
+        const rssUrl = buildNewsRssUrl({ ...options, countryCode });
+
+        const controller = new AbortController();
+        const timeoutId = setTimeout(() => controller.abort(), 10000);
+        const response = await fetch(`https://api.rss2json.com/v1/api.json?rss_url=${encodeURIComponent(rssUrl)}`, { signal: controller.signal });
+        clearTimeout(timeoutId);
+
+        const contentType = response.headers.get("content-type") || "";
+        let data: any = null;
+        if (contentType.includes("application/json")) {
+            data = await response.json();
+        } else {
+            const text = await response.text();
+            try {
+                data = JSON.parse(text);
+            } catch {
+                data = null;
+            }
+        }
+
+        if (data?.status === "ok" && Array.isArray(data.items) && data.items.length > 0) {
+            latestNews = data.items.slice(0, 6).map((item: any) => ({
+                title: item.title.split(" - ")[0],
+                link: item.link,
+                summary: (item.description || item.content || "").replace(/<[^>]+>/g, " ").replace(/\s+/g, " ").trim()
+            }));
+        } else {
+            // Fallback: fetch RSS XML directly and parse minimal fields
+            const controllerFallback = new AbortController();
+            const timeoutIdFallback = setTimeout(() => controllerFallback.abort(), 10000);
+            const rssResp = await fetch(rssUrl, { signal: controllerFallback.signal });
+            clearTimeout(timeoutIdFallback);
+            const rssText = await rssResp.text();
+            const items = rssText.match(/<item>[\s\S]*?<\/item>/gi) || [];
+            latestNews = items.slice(0, 6).map((raw) => {
+                const titleMatch = raw.match(/<title><!\[CDATA\[(.*?)\]\]><\/title>|<title>(.*?)<\/title>/i);
+                const linkMatch = raw.match(/<link>(.*?)<\/link>/i);
+                const descMatch = raw.match(/<description><!\[CDATA\[(.*?)\]\]><\/description>|<description>(.*?)<\/description>/i);
+                const title = (titleMatch?.[1] || titleMatch?.[2] || "").split(" - ")[0].trim();
+                const link = (linkMatch?.[1] || "").trim();
+                const summary = (descMatch?.[1] || descMatch?.[2] || "").replace(/<[^>]+>/g, " ").replace(/\s+/g, " ").trim();
+                return { title, link, summary };
+            }).filter((n) => n.title && n.link);
+        }
+
+        lastFetchTime = Date.now();
+        cachedNewsOptions = options;
+        chrome.storage.local.set({ latestNews, lastFetchTime, cachedNewsOptions });
+
+        if (latestNews.length > 0) {
+            const titles = latestNews.map((n) => n.title);
+            speak(`Here are the top ${titles.length} headlines: ${titles.join(". ")}. You can ask me to read a specific one or open all of them.`);
+        } else {
+            speak("I couldn't find any news.");
+        }
+    } catch (e: any) {
+        console.error("News fetch error:", e);
+        if (e.name === "AbortError") {
+            speak("The request timed out. Please try again later.");
+        } else {
+            speak("Sorry, I couldn't get the news.");
+        }
+    }
 }
 
 function humanizeTime(d: Date) {
@@ -306,15 +624,17 @@ async function readFromIndex(startIndex: number, autoContinue: boolean) {
     readingState.index = clamped;
     readingState.isReading = true;
 
-    for (let i = clamped; i < readingState.chunks.length; i++) {
-        if (!readingState.isReading) break;
-        readingState.index = i;
-        await speakChunked(readingState.chunks[i]);
-        if (!autoContinue) {
-            readingState.isReading = false;
-            return;
+    await withListenSuppressed(async () => {
+        for (let i = clamped; i < readingState.chunks.length; i++) {
+            if (!readingState.isReading) break;
+            readingState.index = i;
+            await speakChunked(readingState.chunks[i]);
+            if (!autoContinue) {
+                readingState.isReading = false;
+                return;
+            }
         }
-    }
+    });
 
     readingState.isReading = false;
 }
@@ -334,6 +654,9 @@ const ALIASES: Record<string, string> = {
     hows: "how",
     whos: "who",
     summarise: "summarize",
+    loacal: "local",
+    internations: "international",
+    fiance: "finance",
 };
 
 // ===============================
@@ -380,6 +703,15 @@ function detectIntent(tokens: string[]) {
         MUSIC_NEXT: 0,
         MUSIC_PREV: 0,
         MUSIC_REPLAY: 0,
+        NEWS_OPEN_ITEM: 0,
+        NEWS_READ_FULL: 0,
+        NEWS_READ_ALL: 0,
+        NEWS_STOP: 0,
+        NEWS_LATEST: 0,
+        NEWS_NEXT: 0,
+        NEWS_PREV: 0,
+        NEWS_READ_FULL_BODY: 0,
+        NEWS_FULL_CHOICE: 0,
     };
 
     // ---- Greeting phrases (HIGH PRIORITY)
@@ -478,12 +810,30 @@ function detectIntent(tokens: string[]) {
         scores.PLAY_MUSIC += 4;
     }
 
+    const newsContext =
+        tokens.includes("news") ||
+        tokens.includes("headline") ||
+        tokens.includes("headlines") ||
+        tokens.includes("article") ||
+        tokens.includes("articles") ||
+        tokens.includes("story") ||
+        tokens.includes("stories");
+
     // ---- Read News Item
     if (
+        newsContext &&
         tokens.includes("read") &&
         tokens.some(t => ["1", "2", "3", "4", "5", "6", "one", "two", "three", "four", "five", "six", "first", "second", "third", "fourth", "fifth", "sixth"].includes(t))
     ) {
-        scores.READ_NEWS_ITEM += 5;
+        scores.READ_NEWS_ITEM += 6;
+    }
+
+    if (
+        newsContext &&
+        (tokens.includes("reread") || tokens.includes("repeat")) &&
+        tokens.some(t => ["1", "2", "3", "4", "5", "6", "one", "two", "three", "four", "five", "six", "first", "second", "third", "fourth", "fifth", "sixth"].includes(t))
+    ) {
+        scores.READ_NEWS_ITEM += 6;
     }
 
     // ---- Open All News
@@ -492,6 +842,150 @@ function detectIntent(tokens: string[]) {
         hasPhrase(tokens, ["show", "all", "news"])
     ) {
         scores.OPEN_ALL_NEWS += 5;
+    }
+
+    // ---- Open/Read Full News Item
+    if (
+        newsContext &&
+        tokens.includes("open") &&
+        tokens.some(t => ["headline", "headlines", "news", "article", "articles", "story", "stories"].includes(t)) &&
+        tokens.some(t => ["1", "2", "3", "4", "5", "6", "one", "two", "three", "four", "five", "six", "first", "second", "third", "fourth", "fifth", "sixth"].includes(t))
+    ) {
+        scores.NEWS_OPEN_ITEM += 6;
+    }
+
+    // Exact pattern: "read #" / "open #" for headlines
+    if (
+        newsContext &&
+        tokens.length >= 2 &&
+        tokens[0] === "read" &&
+        ["1", "2", "3", "4", "5", "6", "one", "two", "three", "four", "five", "six"].includes(tokens[1])
+    ) {
+        scores.READ_NEWS_ITEM += 7;
+    }
+
+    if (
+        newsContext &&
+        tokens.length >= 2 &&
+        tokens[0] === "open" &&
+        ["1", "2", "3", "4", "5", "6", "one", "two", "three", "four", "five", "six"].includes(tokens[1])
+    ) {
+        scores.NEWS_OPEN_ITEM += 7;
+    }
+
+    if (
+        newsContext &&
+        tokens.length >= 3 &&
+        tokens[0] === "read" &&
+        ["1", "2", "3", "4", "5", "6", "one", "two", "three", "four", "five", "six"].includes(tokens[1]) &&
+        ["headline", "headlines", "news", "article", "articles", "story", "stories"].includes(tokens[2])
+    ) {
+        scores.READ_NEWS_ITEM += 8;
+    }
+
+    if (
+        newsContext &&
+        tokens.length >= 3 &&
+        tokens[0] === "open" &&
+        ["1", "2", "3", "4", "5", "6", "one", "two", "three", "four", "five", "six"].includes(tokens[1]) &&
+        ["headline", "headlines", "news", "article", "articles", "story", "stories"].includes(tokens[2])
+    ) {
+        scores.NEWS_OPEN_ITEM += 8;
+    }
+
+    if (
+        newsContext &&
+        tokens.length >= 3 &&
+        tokens[0] === "read" &&
+        ["headline", "headlines", "news", "article", "articles", "story", "stories"].includes(tokens[1]) &&
+        ["1", "2", "3", "4", "5", "6", "one", "two", "three", "four", "five", "six"].includes(tokens[2])
+    ) {
+        scores.READ_NEWS_ITEM += 8;
+    }
+
+    if (
+        newsContext &&
+        tokens.length >= 3 &&
+        tokens[0] === "open" &&
+        ["headline", "headlines", "news", "article", "articles", "story", "stories"].includes(tokens[1]) &&
+        ["1", "2", "3", "4", "5", "6", "one", "two", "three", "four", "five", "six"].includes(tokens[2])
+    ) {
+        scores.NEWS_OPEN_ITEM += 8;
+    }
+
+    if (
+        newsContext &&
+        tokens.includes("read") &&
+        tokens.some(t => ["full", "article", "fullpage", "page"].includes(t))
+    ) {
+        scores.NEWS_READ_FULL += 6;
+    }
+
+    if (
+        newsContext &&
+        tokens.includes("read") &&
+        tokens.some(t => ["full", "body", "story"].includes(t))
+    ) {
+        scores.NEWS_READ_FULL_BODY += 7;
+    }
+
+    if (
+        newsContext &&
+        (tokens.includes("summary") ||
+            tokens.includes("full") ||
+            tokens.includes("article") ||
+            tokens.includes("story"))
+    ) {
+        scores.NEWS_FULL_CHOICE += 4;
+    }
+
+    if (
+        newsContext &&
+        tokens.includes("read") &&
+        tokens.includes("all") &&
+        tokens.some(t => ["headlines", "news"].includes(t))
+    ) {
+        scores.NEWS_READ_ALL += 5;
+    }
+
+    if (
+        newsContext &&
+        tokens.includes("stop") &&
+        tokens.some(t => ["news", "headlines"].includes(t))
+    ) {
+        scores.NEWS_STOP += 6;
+    }
+
+    if (
+        newsContext &&
+        (hasPhrase(tokens, ["open", "latest"]) ||
+            hasPhrase(tokens, ["open", "the", "latest"]) ||
+            hasPhrase(tokens, ["read", "latest"]) ||
+            hasPhrase(tokens, ["read", "the", "latest"]) ||
+            hasPhrase(tokens, ["read", "last", "headline"]) ||
+            hasPhrase(tokens, ["read", "the", "last", "headline"]) ||
+            hasPhrase(tokens, ["open", "last", "headline"]) ||
+            hasPhrase(tokens, ["open", "the", "last", "headline"]))
+    ) {
+        scores.NEWS_LATEST += 6;
+    }
+
+    if (
+        newsContext &&
+        (hasPhrase(tokens, ["read", "next", "headline"]) ||
+            hasPhrase(tokens, ["read", "the", "next", "headline"]) ||
+            hasPhrase(tokens, ["next", "headline"]) ||
+            hasPhrase(tokens, ["open", "next", "headline"]) ||
+            hasPhrase(tokens, ["read", "previous", "headline"]) ||
+            hasPhrase(tokens, ["read", "the", "previous", "headline"]) ||
+            hasPhrase(tokens, ["previous", "headline"]) ||
+            hasPhrase(tokens, ["open", "previous", "headline"]))
+    ) {
+        if (tokens.includes("previous")) {
+            scores.NEWS_PREV += 6;
+        } else {
+            scores.NEWS_NEXT += 6;
+        }
     }
 
     // ---- Read Page
@@ -679,7 +1173,7 @@ function detectIntent(tokens: string[]) {
         if (t === "weather") scores.WEATHER += 2;
         if (t === "name") scores.IDENTITY += 2;
         if (t === "age") scores.AGE += 2;
-        if (["news", "headline"].includes(t)) scores.NEWS += 2;
+        if (["news", "headline", "headlines", "article", "articles", "story", "stories"].includes(t)) scores.NEWS += 2;
         if (["calculate", "math", "plus", "minus", "multiply", "divide"].includes(t)) scores.CALCULATE += 2;
         if (["all"].includes(t)) scores.OPEN_ALL_NEWS += 2;
         if (["reader", "reading"].includes(t)) scores.READ_PAGE += 2;
@@ -698,6 +1192,302 @@ function extractQuery(tokens: string[], ignore: string[]) {
     return tokens.filter((t) => !ignore.includes(t)).join(" ");
 }
 
+function extractNewsScope(tokens: string[]): "local" | "international" | null {
+    if (tokens.includes("local") || tokens.includes("nearby") || hasPhrase(tokens, ["in", "my", "country"])) return "local";
+    if (tokens.includes("international") || tokens.includes("global") || tokens.includes("world")) return "international";
+    return null;
+}
+
+function extractNewsTopic(tokens: string[]) {
+    const topicMap: Record<string, { code: string; label: string }> = {
+        tech: { code: "TECHNOLOGY", label: "tech" },
+        technology: { code: "TECHNOLOGY", label: "tech" },
+        ai: { code: "TECHNOLOGY", label: "AI" },
+        artificial: { code: "TECHNOLOGY", label: "AI" },
+        intelligence: { code: "TECHNOLOGY", label: "AI" },
+        safety: { code: "TECHNOLOGY", label: "AI safety" },
+        aisafety: { code: "TECHNOLOGY", label: "AI safety" },
+        ethics: { code: "TECHNOLOGY", label: "AI ethics" },
+        alignment: { code: "TECHNOLOGY", label: "AI alignment" },
+        ml: { code: "TECHNOLOGY", label: "machine learning" },
+        machine: { code: "TECHNOLOGY", label: "machine learning" },
+        learning: { code: "TECHNOLOGY", label: "machine learning" },
+        llm: { code: "TECHNOLOGY", label: "LLMs" },
+        llms: { code: "TECHNOLOGY", label: "LLMs" },
+        chatbot: { code: "TECHNOLOGY", label: "chatbots" },
+        chatbots: { code: "TECHNOLOGY", label: "chatbots" },
+        robotics: { code: "TECHNOLOGY", label: "robotics" },
+        robot: { code: "TECHNOLOGY", label: "robotics" },
+        drones: { code: "TECHNOLOGY", label: "drones" },
+        gadgets: { code: "TECHNOLOGY", label: "gadgets" },
+        hardware: { code: "TECHNOLOGY", label: "hardware" },
+        software: { code: "TECHNOLOGY", label: "software" },
+        apps: { code: "TECHNOLOGY", label: "apps" },
+        app: { code: "TECHNOLOGY", label: "apps" },
+        mobile: { code: "TECHNOLOGY", label: "mobile" },
+        android: { code: "TECHNOLOGY", label: "android" },
+        ios: { code: "TECHNOLOGY", label: "iOS" },
+        apple: { code: "TECHNOLOGY", label: "Apple" },
+        google: { code: "TECHNOLOGY", label: "Google" },
+        microsoft: { code: "TECHNOLOGY", label: "Microsoft" },
+        meta: { code: "TECHNOLOGY", label: "Meta" },
+        amazon: { code: "TECHNOLOGY", label: "Amazon" },
+        cybersecurity: { code: "TECHNOLOGY", label: "cybersecurity" },
+        security: { code: "TECHNOLOGY", label: "security" },
+        hacking: { code: "TECHNOLOGY", label: "hacking" },
+        privacy: { code: "TECHNOLOGY", label: "privacy" },
+        data: { code: "TECHNOLOGY", label: "data" },
+        database: { code: "TECHNOLOGY", label: "databases" },
+        databases: { code: "TECHNOLOGY", label: "databases" },
+        cloud: { code: "TECHNOLOGY", label: "cloud" },
+        aws: { code: "TECHNOLOGY", label: "AWS" },
+        azure: { code: "TECHNOLOGY", label: "Azure" },
+        gcp: { code: "TECHNOLOGY", label: "GCP" },
+        devops: { code: "TECHNOLOGY", label: "DevOps" },
+        programming: { code: "TECHNOLOGY", label: "programming" },
+        coding: { code: "TECHNOLOGY", label: "coding" },
+        openai: { code: "TECHNOLOGY", label: "OpenAI" },
+        blockchain: { code: "BUSINESS", label: "blockchain" },
+        defi: { code: "BUSINESS", label: "DeFi" },
+        nft: { code: "BUSINESS", label: "NFTs" },
+        nfts: { code: "BUSINESS", label: "NFTs" },
+        token: { code: "BUSINESS", label: "tokens" },
+        tokens: { code: "BUSINESS", label: "tokens" },
+        stablecoin: { code: "BUSINESS", label: "stablecoins" },
+        stablecoins: { code: "BUSINESS", label: "stablecoins" },
+        regulation: { code: "BUSINESS", label: "regulation" },
+        regulatory: { code: "BUSINESS", label: "regulation" },
+        tariffs: { code: "BUSINESS", label: "tariffs" },
+        inflation: { code: "BUSINESS", label: "inflation" },
+        recession: { code: "BUSINESS", label: "recession" },
+        gdp: { code: "BUSINESS", label: "GDP" },
+        earnings: { code: "BUSINESS", label: "earnings" },
+        ipo: { code: "BUSINESS", label: "IPOs" },
+        ipos: { code: "BUSINESS", label: "IPOs" },
+        mergers: { code: "BUSINESS", label: "M&A" },
+        acquisitions: { code: "BUSINESS", label: "M&A" },
+        mna: { code: "BUSINESS", label: "M&A" },
+        funding: { code: "BUSINESS", label: "funding" },
+        fundraising: { code: "BUSINESS", label: "funding" },
+        layoffs: { code: "BUSINESS", label: "layoffs" },
+        salaries: { code: "BUSINESS", label: "salaries" },
+        wage: { code: "BUSINESS", label: "wages" },
+        wages: { code: "BUSINESS", label: "wages" },
+        commodities: { code: "BUSINESS", label: "commodities" },
+        oil: { code: "BUSINESS", label: "oil" },
+        gas: { code: "BUSINESS", label: "energy" },
+        energy: { code: "BUSINESS", label: "energy" },
+        renewables: { code: "SCIENCE", label: "renewables" },
+        solar: { code: "SCIENCE", label: "solar" },
+        wind: { code: "SCIENCE", label: "wind" },
+        ev: { code: "SCIENCE", label: "electric vehicles" },
+        electric: { code: "SCIENCE", label: "electric vehicles" },
+        vehicles: { code: "SCIENCE", label: "transport" },
+        transportation: { code: "SCIENCE", label: "transport" },
+        aviation: { code: "SCIENCE", label: "aviation" },
+        airlines: { code: "WORLD", label: "travel" },
+        spaceflight: { code: "SCIENCE", label: "spaceflight" },
+        astronomy: { code: "SCIENCE", label: "astronomy" },
+        physics: { code: "SCIENCE", label: "physics" },
+        biology: { code: "SCIENCE", label: "biology" },
+        chemistry: { code: "SCIENCE", label: "chemistry" },
+        archaeology: { code: "SCIENCE", label: "archaeology" },
+        paleontology: { code: "SCIENCE", label: "paleontology" },
+        climatechange: { code: "SCIENCE", label: "climate" },
+        wildfires: { code: "SCIENCE", label: "wildfires" },
+        hurricanes: { code: "SCIENCE", label: "hurricanes" },
+        earthquakes: { code: "SCIENCE", label: "earthquakes" },
+        disasters: { code: "SCIENCE", label: "disasters" },
+        pandemic: { code: "HEALTH", label: "pandemic" },
+        vaccines: { code: "HEALTH", label: "vaccines" },
+        mental: { code: "HEALTH", label: "mental health" },
+        mindfulness: { code: "HEALTH", label: "mindfulness" },
+        diet: { code: "HEALTH", label: "nutrition" },
+        diabetes: { code: "HEALTH", label: "diabetes" },
+        cancer: { code: "HEALTH", label: "cancer" },
+        covid: { code: "HEALTH", label: "COVID" },
+        biotech: { code: "HEALTH", label: "biotech" },
+        pharma: { code: "HEALTH", label: "pharma" },
+        drugs: { code: "HEALTH", label: "drugs" },
+        hospitals: { code: "HEALTH", label: "hospitals" },
+        insurance: { code: "HEALTH", label: "insurance" },
+        schools: { code: "NATION", label: "education" },
+        universities: { code: "NATION", label: "education" },
+        tuition: { code: "NATION", label: "education" },
+        renters: { code: "BUSINESS", label: "housing" },
+        mortgages: { code: "BUSINESS", label: "housing" },
+        startupsfunding: { code: "BUSINESS", label: "startups funding" },
+        venturecapital: { code: "BUSINESS", label: "venture capital" },
+        seed: { code: "BUSINESS", label: "startups funding" },
+        seriesa: { code: "BUSINESS", label: "startups funding" },
+        seriesb: { code: "BUSINESS", label: "startups funding" },
+        seriesc: { code: "BUSINESS", label: "startups funding" },
+        founders: { code: "BUSINESS", label: "startups" },
+        entrepreneurship: { code: "BUSINESS", label: "startups" },
+        creator: { code: "ENTERTAINMENT", label: "creator economy" },
+        creators: { code: "ENTERTAINMENT", label: "creator economy" },
+        youtube: { code: "ENTERTAINMENT", label: "YouTube" },
+        tiktok: { code: "ENTERTAINMENT", label: "TikTok" },
+        instagram: { code: "ENTERTAINMENT", label: "Instagram" },
+        twitch: { code: "ENTERTAINMENT", label: "Twitch" },
+        podcasts: { code: "ENTERTAINMENT", label: "podcasts" },
+        books: { code: "ENTERTAINMENT", label: "books" },
+        awards: { code: "ENTERTAINMENT", label: "awards" },
+        fashion: { code: "ENTERTAINMENT", label: "fashion" },
+        art: { code: "ENTERTAINMENT", label: "art" },
+        theater: { code: "ENTERTAINMENT", label: "theater" },
+        broadway: { code: "ENTERTAINMENT", label: "theater" },
+        photography: { code: "ENTERTAINMENT", label: "photography" },
+        design: { code: "ENTERTAINMENT", label: "design" },
+        festival: { code: "ENTERTAINMENT", label: "festivals" },
+        concerts: { code: "ENTERTAINMENT", label: "concerts" },
+        comedy: { code: "ENTERTAINMENT", label: "comedy" },
+        pc: { code: "ENTERTAINMENT", label: "PC gaming" },
+        console: { code: "ENTERTAINMENT", label: "console gaming" },
+        playstation: { code: "ENTERTAINMENT", label: "PlayStation" },
+        xbox: { code: "ENTERTAINMENT", label: "Xbox" },
+        nintendo: { code: "ENTERTAINMENT", label: "Nintendo" },
+        worldcup: { code: "SPORTS", label: "World Cup" },
+        olympics: { code: "SPORTS", label: "Olympics" },
+        cricket: { code: "SPORTS", label: "cricket" },
+        rugby: { code: "SPORTS", label: "rugby" },
+        boxing: { code: "SPORTS", label: "boxing" },
+        mma: { code: "SPORTS", label: "MMA" },
+        ufc: { code: "SPORTS", label: "UFC" },
+        wwe: { code: "SPORTS", label: "WWE" },
+        wnba: { code: "SPORTS", label: "WNBA" },
+        womens: { code: "SPORTS", label: "women's sports" },
+        baseball: { code: "SPORTS", label: "baseball" },
+        basketball: { code: "SPORTS", label: "basketball" },
+        congress: { code: "NATION", label: "politics" },
+        senate: { code: "NATION", label: "politics" },
+        courts: { code: "NATION", label: "law" },
+        supreme: { code: "NATION", label: "law" },
+        diplomacy: { code: "WORLD", label: "diplomacy" },
+        sanctions: { code: "WORLD", label: "sanctions" },
+        refugees: { code: "WORLD", label: "refugees" },
+        border: { code: "WORLD", label: "immigration" },
+        defense: { code: "WORLD", label: "defense" },
+        military: { code: "WORLD", label: "military" },
+        humanitarian: { code: "WORLD", label: "humanitarian" },
+        aid: { code: "WORLD", label: "aid" },
+        africa: { code: "WORLD", label: "Africa" },
+        europe: { code: "WORLD", label: "Europe" },
+        asia: { code: "WORLD", label: "Asia" },
+        middleeast: { code: "WORLD", label: "Middle East" },
+        latinamerica: { code: "WORLD", label: "Latin America" },
+        uk: { code: "WORLD", label: "UK" },
+        usa: { code: "WORLD", label: "USA" },
+        canada: { code: "WORLD", label: "Canada" },
+        india: { code: "WORLD", label: "India" },
+        china: { code: "WORLD", label: "China" },
+        russia: { code: "WORLD", label: "Russia" },
+        ukraine: { code: "WORLD", label: "Ukraine" },
+        israel: { code: "WORLD", label: "Israel" },
+        palestine: { code: "WORLD", label: "Palestine" },
+        gaza: { code: "WORLD", label: "Gaza" },
+        crypto: { code: "BUSINESS", label: "crypto" },
+        cryptocurrency: { code: "BUSINESS", label: "crypto" },
+        bitcoin: { code: "BUSINESS", label: "crypto" },
+        ethereum: { code: "BUSINESS", label: "crypto" },
+        web3: { code: "TECHNOLOGY", label: "web3" },
+        startups: { code: "BUSINESS", label: "startups" },
+        startup: { code: "BUSINESS", label: "startups" },
+        venture: { code: "BUSINESS", label: "venture" },
+        vc: { code: "BUSINESS", label: "venture" },
+        economy: { code: "BUSINESS", label: "economy" },
+        markets: { code: "BUSINESS", label: "markets" },
+        stocks: { code: "BUSINESS", label: "stocks" },
+        investing: { code: "BUSINESS", label: "investing" },
+        finance: { code: "BUSINESS", label: "finance" },
+        fintech: { code: "BUSINESS", label: "fintech" },
+        banking: { code: "BUSINESS", label: "banking" },
+        realestate: { code: "BUSINESS", label: "real estate" },
+        housing: { code: "BUSINESS", label: "housing" },
+        jobs: { code: "BUSINESS", label: "jobs" },
+        labor: { code: "BUSINESS", label: "labor" },
+        business: { code: "BUSINESS", label: "business" },
+        sports: { code: "SPORTS", label: "sports" },
+        sport: { code: "SPORTS", label: "sports" },
+        nba: { code: "SPORTS", label: "NBA" },
+        nfl: { code: "SPORTS", label: "NFL" },
+        mlb: { code: "SPORTS", label: "MLB" },
+        nhl: { code: "SPORTS", label: "NHL" },
+        soccer: { code: "SPORTS", label: "soccer" },
+        football: { code: "SPORTS", label: "football" },
+        tennis: { code: "SPORTS", label: "tennis" },
+        golf: { code: "SPORTS", label: "golf" },
+        f1: { code: "SPORTS", label: "Formula 1" },
+        racing: { code: "SPORTS", label: "racing" },
+        esports: { code: "SPORTS", label: "esports" },
+        gaming: { code: "ENTERTAINMENT", label: "gaming" },
+        entertainment: { code: "ENTERTAINMENT", label: "entertainment" },
+        movies: { code: "ENTERTAINMENT", label: "movies" },
+        tv: { code: "ENTERTAINMENT", label: "TV" },
+        streaming: { code: "ENTERTAINMENT", label: "streaming" },
+        music: { code: "ENTERTAINMENT", label: "music" },
+        celebrities: { code: "ENTERTAINMENT", label: "celebrities" },
+        culture: { code: "ENTERTAINMENT", label: "culture" },
+        science: { code: "SCIENCE", label: "science" },
+        space: { code: "SCIENCE", label: "space" },
+        nasa: { code: "SCIENCE", label: "space" },
+        climate: { code: "SCIENCE", label: "climate" },
+        environment: { code: "SCIENCE", label: "environment" },
+        health: { code: "HEALTH", label: "health" },
+        healthcare: { code: "HEALTH", label: "health" },
+        medicine: { code: "HEALTH", label: "medicine" },
+        wellness: { code: "HEALTH", label: "wellness" },
+        fitness: { code: "HEALTH", label: "fitness" },
+        nutrition: { code: "HEALTH", label: "nutrition" },
+        travel: { code: "WORLD", label: "travel" },
+        world: { code: "WORLD", label: "world" },
+        global: { code: "WORLD", label: "world" },
+        geopolitics: { code: "WORLD", label: "geopolitics" },
+        war: { code: "WORLD", label: "world" },
+        politics: { code: "NATION", label: "politics" },
+        government: { code: "NATION", label: "politics" },
+        elections: { code: "NATION", label: "elections" },
+        policy: { code: "NATION", label: "policy" },
+        law: { code: "NATION", label: "law" },
+        crime: { code: "NATION", label: "crime" },
+        education: { code: "NATION", label: "education" },
+        immigration: { code: "NATION", label: "immigration" },
+        national: { code: "NATION", label: "national" },
+    };
+
+    // Handle multi-word topics first (bigrams)
+    for (let i = 0; i < tokens.length - 1; i++) {
+        const pair = `${tokens[i]} ${tokens[i + 1]}`;
+        if (pair === "ai safety") return { code: "TECHNOLOGY", label: "AI safety" };
+        if (pair === "startup funding") return { code: "BUSINESS", label: "startups funding" };
+        if (pair === "venture capital") return { code: "BUSINESS", label: "venture capital" };
+        if (pair === "machine learning") return { code: "TECHNOLOGY", label: "machine learning" };
+        if (pair === "artificial intelligence") return { code: "TECHNOLOGY", label: "AI" };
+        if (pair === "real estate") return { code: "BUSINESS", label: "real estate" };
+        if (pair === "electric vehicles") return { code: "SCIENCE", label: "electric vehicles" };
+        if (pair === "mental health") return { code: "HEALTH", label: "mental health" };
+        if (pair === "data privacy") return { code: "TECHNOLOGY", label: "privacy" };
+    }
+
+    for (const t of tokens) {
+        if (topicMap[t]) return topicMap[t];
+    }
+    return null;
+}
+
+function extractNewsIndex(tokens: string[]) {
+    const numberMap: Record<string, number> = {
+        "one": 0, "first": 0, "1": 0,
+        "two": 1, "second": 1, "2": 1,
+        "three": 2, "third": 2, "3": 2,
+        "four": 3, "fourth": 3, "4": 3,
+        "five": 4, "fifth": 4, "5": 4,
+        "six": 5, "sixth": 5, "6": 5,
+    };
+    const token = tokens.find((t) => numberMap[t] !== undefined);
+    return token ? numberMap[token] : null;
+}
+
 // ===============================
 // UNDERSTAND
 // ===============================
@@ -707,7 +1497,7 @@ function understand(input: string) {
 
     const { intent, confidence, scores, sorted } = detectIntent(tokens);
 
-    const entities = {
+    const entities: Entities = {
         query: extractQuery(tokens, [
             "play",
             "pause",
@@ -739,6 +1529,8 @@ function understand(input: string) {
             "tell",
             "about",
             "read",
+            "reread",
+            "repeat",
             "and",
             "find",
             "this",
@@ -761,7 +1553,33 @@ function understand(input: string) {
             "spotify",
             "playlist",
             "album",
+            "news",
+            "headline",
+            "headlines",
+            "latest",
+            "article",
+            "full",
+            "fullpage",
+            "local",
+            "international",
+            "global",
+            "world",
+            "tech",
+            "technology",
+            "finance",
+            "business",
+            "sports",
+            "sport",
+            "health",
+            "science",
+            "entertainment",
+            "movies",
+            "politics",
+            "national",
         ]),
+        newsScope: extractNewsScope(tokens),
+        newsTopic: extractNewsTopic(tokens),
+        newsIndex: extractNewsIndex(tokens),
     };
 
     return { intent, confidence, entities, scores, sorted };
@@ -773,7 +1591,19 @@ function understand(input: string) {
 interface Task {
     intent: string;
     minConfidence: number;
-    action: (entities: { query: string }) => void | Promise<void>;
+    action: (entities: {
+        query: string;
+        newsScope?: "local" | "international" | null;
+        newsTopic?: { code: string; label: string } | null;
+        newsIndex?: number | null;
+    }) => void | Promise<void>;
+}
+
+interface Entities {
+    query: string;
+    newsScope?: "local" | "international" | null;
+    newsTopic?: { code: string; label: string } | null;
+    newsIndex?: number | null;
 }
 
 const TASK_REGISTRY: Task[] = [
@@ -970,53 +1800,168 @@ const TASK_REGISTRY: Task[] = [
     {
         intent: "NEWS",
         minConfidence: 2,
-        action: async () => {
-            speak("Fetching the latest headlines.");
-            try {
-                // Use rss2json to avoid CORS issues and get JSON directly
-                const response = await fetch("https://api.rss2json.com/v1/api.json?rss_url=https://news.google.com/rss");
-                const data = await response.json();
-                if (data.status === "ok" && data.items.length > 0) {
-                    latestNews = data.items.slice(0, 6).map((item: any) => ({
-                        title: item.title.split(" - ")[0],
-                        link: item.link,
-                        description: (item.description || "").replace(/<[^>]*>?/gm, "")
-                    }));
-                    const titles = latestNews.map((n) => n.title);
-                    speak(`Here are the top ${titles.length} headlines: ${titles.join(". ")}. You can ask me to read a specific one or open all of them.`);
-                } else {
-                    speak("I couldn't find any news.");
-                }
-            } catch (e) {
-                console.error("News fetch error:", e);
-                speak("Sorry, I couldn't get the news.");
+        action: async ({ newsScope, newsTopic }) => {
+            const rememberedScope = newsState.scope;
+            const rememberedTopic = newsState.topic;
+            const scope = newsScope || rememberedScope;
+            const topic = newsTopic || rememberedTopic;
+
+            if (!scope) {
+                newsState.pending = true;
+                speak("Do you want local or international news? You can also say a topic like tech, finance, or sports.");
+                return;
             }
+
+            newsState.pending = false;
+            newsState.scope = scope;
+            newsState.topic = topic || null;
+            await fetchNews({ scope, topic: topic || null });
         },
     },
     {
         intent: "READ_NEWS_ITEM",
         minConfidence: 3,
-        action: ({ query }) => {
+        action: async ({ newsIndex }) => {
+            if (latestNews.length === 0) {
+                speak("I don't have fresh headlines yet. Ask for the latest news first.");
+                return;
+            }
+            const index = newsIndex ?? newsState.lastReadIndex;
+            if (index !== null && index !== undefined && latestNews[index]) {
+                const item = latestNews[index];
+                newsState.lastReadIndex = index;
+                await readNewsSummaryAndAsk(item);
+            } else {
+                speak("I couldn't find that news item.");
+            }
+        }
+    },
+    {
+        intent: "NEWS_OPEN_ITEM",
+        minConfidence: 3,
+        action: ({ newsIndex }) => {
             if (latestNews.length === 0) {
                 speak("I haven't fetched any news yet. Ask for the latest news first.");
                 return;
             }
-            const numberMap: Record<string, number> = {
-                "one": 0, "first": 0, "1": 0,
-                "two": 1, "second": 1, "2": 1,
-                "three": 2, "third": 2, "3": 2,
-                "four": 3, "fourth": 3, "4": 3,
-                "five": 4, "fifth": 4, "5": 4,
-                "six": 5, "sixth": 5, "6": 5
-            };
-            const words = query.split(" ");
-            const target = words.find(w => numberMap[w] !== undefined);
-            if (target && latestNews[numberMap[target]]) {
-                const item = latestNews[numberMap[target]];
-                speak(`${item.title}. ${item.description}`);
+            const index = newsIndex ?? newsState.lastReadIndex;
+            if (index !== null && index !== undefined && latestNews[index]) {
+                const item = latestNews[index];
+                newsState.lastReadIndex = index;
+                speak("Opening that headline.");
+                openTab(item.link);
             } else {
                 speak("I couldn't find that news item.");
             }
+        }
+    },
+    {
+        intent: "NEWS_READ_FULL",
+        minConfidence: 3,
+        action: async ({ newsIndex }) => {
+            if (latestNews.length === 0) {
+                speak("I haven't fetched any news yet. Ask for the latest news first.");
+                return;
+            }
+            const index = newsIndex ?? newsState.lastReadIndex;
+            if (index !== null && index !== undefined && latestNews[index]) {
+                const item = latestNews[index];
+                newsState.lastReadIndex = index;
+                await readNewsSummaryThenFull(item);
+            } else {
+                speak("I couldn't find that news item.");
+            }
+        }
+    },
+    {
+        intent: "NEWS_READ_FULL_BODY",
+        minConfidence: 3,
+        action: async ({ newsIndex }) => {
+            if (latestNews.length === 0) {
+                speak("I haven't fetched any news yet. Ask for the latest news first.");
+                return;
+            }
+            const index = newsIndex ?? newsState.lastReadIndex;
+            if (index !== null && index !== undefined && latestNews[index]) {
+                const item = latestNews[index];
+                newsState.lastReadIndex = index;
+                await readNewsSummaryThenFull(item);
+            } else {
+                speak("I couldn't find that news item.");
+            }
+        }
+    },
+    {
+        intent: "NEWS_READ_ALL",
+        minConfidence: 3,
+        action: async () => {
+            if (latestNews.length === 0) {
+                speak("I haven't fetched any news yet. Ask for the latest news first.");
+                return;
+            }
+            const chunks = latestNews.map((item, i) => `${i + 1}. ${item.title}.`);
+            await speakSequential(chunks);
+        }
+    },
+    {
+        intent: "NEWS_LATEST",
+        minConfidence: 3,
+        action: async () => {
+            if (latestNews.length === 0) {
+                speak("I haven't fetched any news yet. Ask for the latest news first.");
+                return;
+            }
+            const index = 0;
+            const item = latestNews[index];
+            newsState.lastReadIndex = index;
+            await readNewsSummaryAndAsk(item);
+        }
+    },
+    {
+        intent: "NEWS_NEXT",
+        minConfidence: 3,
+        action: async () => {
+            if (latestNews.length === 0) {
+                speak("I haven't fetched any news yet. Ask for the latest news first.");
+                return;
+            }
+            const current = newsState.lastReadIndex ?? 0;
+            const nextIndex = Math.min(current + 1, latestNews.length - 1);
+            if (nextIndex === current) {
+                speak("You're already at the last headline.");
+                return;
+            }
+            const item = latestNews[nextIndex];
+            newsState.lastReadIndex = nextIndex;
+            await readNewsSummaryAndAsk(item);
+        }
+    },
+    {
+        intent: "NEWS_PREV",
+        minConfidence: 3,
+        action: async () => {
+            if (latestNews.length === 0) {
+                speak("I haven't fetched any news yet. Ask for the latest news first.");
+                return;
+            }
+            const current = newsState.lastReadIndex ?? 0;
+            const prevIndex = Math.max(current - 1, 0);
+            if (prevIndex === current) {
+                speak("You're already at the first headline.");
+                return;
+            }
+            const item = latestNews[prevIndex];
+            newsState.lastReadIndex = prevIndex;
+            await readNewsSummaryAndAsk(item);
+        }
+    },
+    {
+        intent: "NEWS_STOP",
+        minConfidence: 2,
+        action: () => {
+            stopReadingInternal();
+            chrome.tts.stop();
+            speak("Stopped the news.");
         }
     },
     {
@@ -1078,127 +2023,7 @@ const TASK_REGISTRY: Task[] = [
                 return;
             }
 
-            try {
-                const results = await chrome.scripting.executeScript({
-                    target: { tabId: tab.id },
-                    func: () => {
-                        const root =
-                            document.querySelector("main") ||
-                            document.querySelector("article") ||
-                            document.querySelector('[role="main"]') ||
-                            document.body;
-
-                        if (!root) return "";
-
-                        const REMOVE_SELECTORS = [
-                            "script",
-                            "style",
-                            "noscript",
-                            "nav",
-                            "header",
-                            "footer",
-                            "aside",
-                            "aside *",
-                            "form",
-                            "button",
-                            "input",
-                            "select",
-                            "textarea",
-                            "label",
-                            "figure",
-                            "figcaption",
-                            "svg",
-                            "canvas",
-                            "iframe",
-                            "video",
-                            "audio",
-                            "a",
-                            "[role='navigation']",
-                            "[role='banner']",
-                            "[role='contentinfo']",
-                            "[role='search']",
-                            "[aria-hidden='true']",
-                            // Common cookie/consent banners and overlays
-                            "[id*='cookie']",
-                            "[class*='cookie']",
-                            "[id*='consent']",
-                            "[class*='consent']",
-                            "[id*='gdpr']",
-                            "[class*='gdpr']",
-                            "[id*='privacy']",
-                            "[class*='privacy']",
-                            "[class*='banner']",
-                            "[class*='overlay']",
-                            "[class*='modal']",
-                            "[role='dialog']",
-                            // Common ads / sidebar / promo blocks
-                            "[id*='ad']",
-                            "[class*='ad']",
-                            "[id*='ads']",
-                            "[class*='ads']",
-                            "[id*='sponsor']",
-                            "[class*='sponsor']",
-                            "[class*='promo']",
-                            "[class*='sidebar']",
-                            "[id*='sidebar']",
-                            "[class*='related']",
-                        ];
-
-                        root.querySelectorAll(REMOVE_SELECTORS.join(",")).forEach((el) => el.remove());
-
-                        const walker = document.createTreeWalker(
-                            root,
-                            NodeFilter.SHOW_TEXT,
-                            {
-                                acceptNode(node) {
-                                    const text = (node.nodeValue || "").trim();
-                                    if (!text) return NodeFilter.FILTER_REJECT;
-                                    const parent = node.parentElement;
-                                    if (!parent) return NodeFilter.FILTER_REJECT;
-                                    const tag = parent.tagName.toLowerCase();
-                                    if (["script", "style", "noscript", "nav", "header", "footer", "aside", "form", "button", "input", "select", "textarea", "label", "a"].includes(tag)) {
-                                        return NodeFilter.FILTER_REJECT;
-                                    }
-                                    return NodeFilter.FILTER_ACCEPT;
-                                },
-                            }
-                        );
-
-                        const parts: string[] = [];
-                        let current: Node | null = walker.nextNode();
-                        while (current) {
-                            parts.push((current.nodeValue || "").trim());
-                            current = walker.nextNode();
-                        }
-
-                        const text = parts.join(" ");
-                        return text.replace(/\s\s+/g, " ").trim();
-                    },
-                });
-
-                const text = results?.[0]?.result;
-
-                if (!text || text.length < 50) {
-                    speak("I couldn't find readable text on this page.");
-                    return;
-                }
-
-                readingState.sourceUrl = tab.url;
-                readingState.chunks = splitIntoParagraphs(text);
-                readingState.index = 0;
-                readingState.isReading = false;
-
-                if (!readingState.chunks.length) {
-                    speak("I couldn't find readable text on this page.");
-                    return;
-                }
-
-                stopReadingInternal();
-                await readFromIndex(0, true);
-            } catch (error) {
-                console.error("Reading page failed:", error);
-                speak("Sorry, I couldn't read this page. It may be restricted.");
-            }
+            await readTabById(tab.id, tab.url);
         },
     },
     {
@@ -1347,17 +2172,62 @@ const TASK_REGISTRY: Task[] = [
 // ===============================
 function handleCommand(command: string) {
     const { intent, confidence, entities, scores, sorted } = understand(command);
+    if (newsState.pending) {
+        const scope = entities.newsScope;
+        const topic = entities.newsTopic || newsState.topic;
+        if (scope || topic) {
+            newsState.pending = false;
+            const resolvedScope = scope || "international";
+            newsState.scope = resolvedScope;
+            newsState.topic = topic || null;
+            fetchNews({ scope: resolvedScope, topic });
+            return;
+        }
+        if (intent === "NEWS") {
+            speak("Please say local or international. You can also add a topic like tech, finance, or sports.");
+            return;
+        }
+    }
+    if (newsState.pendingFullChoice) {
+        const wantsFull = ["full", "article", "story", "read", "yes", "sure"].some((t) => command.toLowerCase().includes(t));
+        const wantsSummaryOnly = ["summary", "no", "stop", "cancel"].some((t) => command.toLowerCase().includes(t));
+        if (wantsFull) {
+            newsState.pendingFullChoice = false;
+            const index = newsState.lastReadIndex;
+            if (index !== null && index !== undefined && latestNews[index]) {
+                readNewsSummaryThenFull(latestNews[index], true);
+                return;
+            }
+        }
+        if (wantsSummaryOnly) {
+            newsState.pendingFullChoice = false;
+            speak("Okay.");
+            return;
+        }
+    }
+    let effectiveIntent = intent;
+    if (entities.newsIndex !== null && entities.newsIndex !== undefined && latestNews.length > 0) {
+        const tokens = normalizeTokens(parse(command));
+        const hasNewsWords = tokens.some((t) => ["news", "headline", "headlines", "article", "articles", "story", "stories"].includes(t));
+        if (tokens.includes("open") && (hasNewsWords || tokens.includes("read"))) {
+            effectiveIntent = "NEWS_OPEN_ITEM";
+        } else if (tokens.some((t) => ["full", "article", "story", "fullpage", "page"].includes(t))) {
+            effectiveIntent = "NEWS_READ_FULL_BODY";
+        } else if (tokens.includes("read") || hasNewsWords) {
+            effectiveIntent = "READ_NEWS_ITEM";
+        }
+    }
     if (DEBUG_INTENT) {
         const topThree = sorted.slice(0, 3).map(([k, v]) => `${k}:${v}`).join(" | ");
         console.log("[OPPA] command:", command);
-        console.log("[OPPA] intent:", intent, "confidence:", confidence);
+        console.log("[OPPA] intent:", intent, "confidence:", confidence, "effective:", effectiveIntent);
         console.log("[OPPA] top3:", topThree);
         console.log("[OPPA] scores:", scores);
         console.log("[OPPA] entities:", entities);
     }
 
     const task = TASK_REGISTRY.find(
-        (t) => t.intent === intent && confidence >= t.minConfidence
+        (t) => t.intent === effectiveIntent && confidence >= t.minConfidence
     );
 
     if (task) {
@@ -1386,6 +2256,9 @@ chrome.runtime.onMessage.addListener((msg, _sender, sendResponse) => {
 
     if (msg.type === "OPPA_VOICE_COMMAND") {
         handleCommand(msg.text);
+        // The popup will start listening after the OPPA_SPEECH_END event.
+        sendResponse({ status: "speaking" });
+        return true;
     }
     if (msg.type === "OPPA_STOP_ALL") {
         stopReadingInternal();

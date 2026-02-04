@@ -18,6 +18,10 @@
         "service_worker": "background.js"
     },
     "host_permissions": [
-        "https://open.spotify.com/*"
+        "https://open.spotify.com/*",
+        "https://ipapi.co/*",
+        "https://api.rss2json.com/*",
+        "https://wttr.in/*",
+        "https://api.duckduckgo.com/*"
     ]
 }
