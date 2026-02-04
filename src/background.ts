@@ -38,6 +38,163 @@ function openTab(url: string) {
     chrome.tabs.create({ url });
 }
 
+function controlSpotify(action: "play" | "pause" | "next" | "prev" | "replay" | "stop") {
+    chrome.tabs.query({ url: "*://open.spotify.com/*" }, (tabs) => {
+        const target = tabs.find((t) => t.id) || null;
+        if (!target?.id) {
+            speak("I couldn't find an open Spotify tab.");
+            return;
+        }
+
+        chrome.scripting.executeScript({
+            target: { tabId: target.id },
+            func: (requested: string) => {
+                const click = (sel: string) => {
+                    const el = document.querySelector(sel) as HTMLElement | null;
+                    if (el) {
+                        el.click();
+                        return true;
+                    }
+                    return false;
+                };
+
+                if (requested === "replay") {
+                    const prevBtn =
+                        document.querySelector('button[aria-label^="Previous"]') ||
+                        document.querySelector('button[title^="Previous"]');
+                    if (prevBtn) {
+                        (prevBtn as HTMLElement).click();
+                        setTimeout(() => (prevBtn as HTMLElement).click(), 400);
+                        return "replayed";
+                    }
+                    return "not-found";
+                }
+
+                if (requested === "stop") {
+                    return click('button[aria-label^="Pause"]') || click('button[title^="Pause"]')
+                        ? "paused"
+                        : "not-found";
+                }
+
+                if (requested === "pause") {
+                    return click('button[aria-label^="Pause"]') || click('button[title^="Pause"]')
+                        ? "paused"
+                        : "not-found";
+                }
+
+                if (requested === "play") {
+                    return click('button[aria-label^="Play"]') || click('button[title^="Play"]')
+                        ? "playing"
+                        : "not-found";
+                }
+
+                if (requested === "next") {
+                    return click('button[aria-label^="Next"]') || click('button[title^="Next"]')
+                        ? "next"
+                        : "not-found";
+                }
+
+                if (requested === "prev") {
+                    return click('button[aria-label^="Previous"]') || click('button[title^="Previous"]')
+                        ? "prev"
+                        : "not-found";
+                }
+
+                return "not-found";
+            },
+            args: [action],
+        }).then((results) => {
+            const status = results?.[0]?.result;
+            if (status === "not-found") {
+                speak("I couldn't control playback on Spotify.");
+            }
+        }).catch((error) => {
+            console.error("Spotify control injection failed:", error);
+        });
+    });
+}
+
+function openSpotifyAndPlay(query: string) {
+    const url = `https://open.spotify.com/search/${encodeURIComponent(query || "")}`;
+    chrome.tabs.create({ url }, (tab) => {
+        if (!tab?.id) return;
+        const tabId = tab.id;
+        const onUpdated = (updatedId: number, info: any) => {
+            if (updatedId !== tabId || info.status !== "complete") return;
+            chrome.tabs.onUpdated.removeListener(onUpdated);
+
+            chrome.scripting.executeScript({
+                target: { tabId },
+                func: async () => {
+                    const waitFor = (selector: string, timeoutMs = 10000) =>
+                        new Promise<Element | null>((resolve) => {
+                            const start = Date.now();
+                            const timer = setInterval(() => {
+                                const el = document.querySelector(selector);
+                                if (el) {
+                                    clearInterval(timer);
+                                    resolve(el);
+                                    return;
+                                }
+                                if (Date.now() - start >= timeoutMs) {
+                                    clearInterval(timer);
+                                    resolve(null);
+                                }
+                            }, 250);
+                        });
+
+                    if (document.querySelector('button[data-testid="login-button"], a[href*="login"]')) {
+                        return "login";
+                    }
+
+                    await waitFor('[data-testid="search-page"]', 8000);
+
+                    const topResultPlay =
+                        document.querySelector('[data-testid="top-result-card"] button[data-testid="play-button"]') ||
+                        document.querySelector('[data-testid="top-result-card"] button[aria-label^="Play"]');
+                    if (topResultPlay) {
+                        (topResultPlay as HTMLElement).click();
+                        return "clicked-top-result";
+                    }
+
+                    const trackRow = document.querySelector('[data-testid="tracklist-row"]');
+                    if (trackRow) {
+                        const rowPlay =
+                            trackRow.querySelector('button[data-testid="play-button"]') ||
+                            trackRow.querySelector('button[aria-label^="Play"]') ||
+                            trackRow.querySelector('button[title^="Play"]');
+                        if (rowPlay) {
+                            (rowPlay as HTMLElement).click();
+                            return "clicked-track";
+                        }
+                    }
+
+                    const fallbackPlay =
+                        document.querySelector('button[aria-label^="Play"]') ||
+                        document.querySelector('button[title^="Play"]') ||
+                        document.querySelector('[data-testid="play-button"]');
+                    if (fallbackPlay) {
+                        (fallbackPlay as HTMLElement).click();
+                        return "clicked-fallback";
+                    }
+
+                    return "not-found";
+                },
+            }).then((results) => {
+                const status = results?.[0]?.result;
+                if (status === "login") {
+                    speak("Please log in to Spotify first.");
+                } else if (status === "not-found") {
+                    speak("I couldn't find a play button. Try again after the page finishes loading.");
+                }
+            }).catch((error) => {
+                console.error("Spotify play injection failed:", error);
+            });
+        };
+        chrome.tabs.onUpdated.addListener(onUpdated);
+    });
+}
+
 // ===============================
 // HELPERS
 // ===============================
@@ -139,7 +296,6 @@ async function readFromIndex(startIndex: number, autoContinue: boolean) {
 const ALIASES: Record<string, string> = {
     go: "open",
     launch: "open",
-    start: "play",
     listen: "play",
     picture: "image",
     photo: "image",
@@ -189,6 +345,12 @@ function detectIntent(tokens: string[]) {
         READ_PAGE_STOP: 0,
         READ_PAGE_LAST: 0,
         READ_PAGE_FINAL: 0,
+        MUSIC_PAUSE: 0,
+        MUSIC_RESUME: 0,
+        MUSIC_STOP: 0,
+        MUSIC_NEXT: 0,
+        MUSIC_PREV: 0,
+        MUSIC_REPLAY: 0,
     };
 
     // ---- Greeting phrases (HIGH PRIORITY)
@@ -271,6 +433,22 @@ function detectIntent(tokens: string[]) {
         scores.CALCULATE += 5;
     }
 
+    // ---- Play music (explicit phrase, avoids "start" conflicting with reading)
+    if (
+        hasPhrase(tokens, ["play", "music"]) ||
+        hasPhrase(tokens, ["play", "a", "song"]) ||
+        hasPhrase(tokens, ["play", "song"]) ||
+        hasPhrase(tokens, ["play", "some", "music"]) ||
+        hasPhrase(tokens, ["play", "something"]) ||
+        hasPhrase(tokens, ["put", "on", "music"]) ||
+        hasPhrase(tokens, ["put", "on", "a", "song"]) ||
+        hasPhrase(tokens, ["queue", "a", "song"]) ||
+        hasPhrase(tokens, ["listen", "to", "music"]) ||
+        hasPhrase(tokens, ["play", "tracks"])
+    ) {
+        scores.PLAY_MUSIC += 4;
+    }
+
     // ---- Read News Item
     if (
         tokens.includes("read") &&
@@ -315,6 +493,11 @@ function detectIntent(tokens: string[]) {
         hasPhrase(tokens, ["read", "from", "start"])
     ) {
         scores.READ_PAGE_RESTART += 5;
+    }
+
+    // Extra boost when "start" + "beginning" appears
+    if (tokens.includes("start") && tokens.includes("beginning")) {
+        scores.READ_PAGE_RESTART += 2;
     }
 
     if (
@@ -366,6 +549,89 @@ function detectIntent(tokens: string[]) {
         scores.READ_PAGE_STOP += 5;
     }
 
+    // ---- Music controls (avoid conflicts with reading)
+    const musicContext =
+        tokens.includes("music") ||
+        tokens.includes("song") ||
+        tokens.includes("track") ||
+        tokens.includes("spotify") ||
+        tokens.includes("playlist") ||
+        tokens.includes("album");
+
+    if (
+        musicContext &&
+        (hasPhrase(tokens, ["pause", "music"]) ||
+            hasPhrase(tokens, ["pause", "song"]) ||
+            hasPhrase(tokens, ["pause", "track"]) ||
+            hasPhrase(tokens, ["pause", "spotify"]) ||
+            hasPhrase(tokens, ["hold", "music"]) ||
+            hasPhrase(tokens, ["pause", "audio"]))
+    ) {
+        scores.MUSIC_PAUSE += 6;
+    }
+
+    if (
+        musicContext &&
+        (hasPhrase(tokens, ["resume", "music"]) ||
+            hasPhrase(tokens, ["resume", "song"]) ||
+            hasPhrase(tokens, ["resume", "track"]) ||
+            hasPhrase(tokens, ["continue", "music"]) ||
+            hasPhrase(tokens, ["keep", "playing"]) ||
+            hasPhrase(tokens, ["play", "music", "again"]) ||
+            hasPhrase(tokens, ["unpause", "music"]))
+    ) {
+        scores.MUSIC_RESUME += 6;
+    }
+
+    if (
+        musicContext &&
+        (hasPhrase(tokens, ["stop", "music"]) ||
+            hasPhrase(tokens, ["stop", "song"]) ||
+            hasPhrase(tokens, ["stop", "track"]) ||
+            hasPhrase(tokens, ["stop", "spotify"]) ||
+            hasPhrase(tokens, ["mute", "music"]) ||
+            hasPhrase(tokens, ["kill", "music"]))
+    ) {
+        scores.MUSIC_STOP += 6;
+    }
+
+    if (
+        musicContext &&
+        (hasPhrase(tokens, ["next", "song"]) ||
+            hasPhrase(tokens, ["next", "track"]) ||
+            hasPhrase(tokens, ["skip", "song"]) ||
+            hasPhrase(tokens, ["skip", "track"]) ||
+            hasPhrase(tokens, ["skip", "this"]) ||
+            hasPhrase(tokens, ["play", "next"]) ||
+            hasPhrase(tokens, ["next", "music"]))
+    ) {
+        scores.MUSIC_NEXT += 6;
+    }
+
+    if (
+        musicContext &&
+        (hasPhrase(tokens, ["previous", "song"]) ||
+            hasPhrase(tokens, ["previous", "track"]) ||
+            hasPhrase(tokens, ["go", "back", "song"]) ||
+            hasPhrase(tokens, ["play", "previous"]) ||
+            hasPhrase(tokens, ["last", "song"]) ||
+            hasPhrase(tokens, ["back", "track"]))
+    ) {
+        scores.MUSIC_PREV += 6;
+    }
+
+    if (
+        musicContext &&
+        (hasPhrase(tokens, ["replay", "song"]) ||
+            hasPhrase(tokens, ["replay", "track"]) ||
+            hasPhrase(tokens, ["restart", "song"]) ||
+            hasPhrase(tokens, ["restart", "track"]) ||
+            hasPhrase(tokens, ["play", "this", "again"]) ||
+            hasPhrase(tokens, ["repeat", "song"]))
+    ) {
+        scores.MUSIC_REPLAY += 6;
+    }
+
     // ---- Token-based scoring
     tokens.forEach((t) => {
         if (["hi", "hello", "hey"].includes(t)) scores.GREET += 3;
@@ -373,7 +639,7 @@ function detectIntent(tokens: string[]) {
         if (["search", "find"].includes(t)) scores.SEARCH_WEB += 2;
         if (t === "play" && !tokens.includes("read")) scores.PLAY_MUSIC += 2;
         if (t === "youtube") scores.PLAY_YOUTUBE += 2;
-        if (["pause", "resume", "stop"].includes(t)) scores.MEDIA_CONTROL += 2;
+        if (["pause", "resume", "stop"].includes(t) && !musicContext) scores.MEDIA_CONTROL += 2;
         if (t === "image") scores.GET_IMAGE += 2;
         if (["github", "npm", "stackoverflow"].includes(t)) scores.DEV_SEARCH += 2;
         if (["tab", "next"].includes(t)) scores.TAB_CONTROL += 2;
@@ -415,6 +681,13 @@ function understand(input: string) {
     const entities = {
         query: extractQuery(tokens, [
             "play",
+            "pause",
+            "resume",
+            "stop",
+            "replay",
+            "next",
+            "previous",
+            "skip",
             "open",
             "search",
             "image",
@@ -453,6 +726,12 @@ function understand(input: string) {
             "beginning",
             "over",
             "again",
+            "music",
+            "song",
+            "track",
+            "spotify",
+            "playlist",
+            "album",
         ]),
     };
 
@@ -582,7 +861,55 @@ const TASK_REGISTRY: Task[] = [
         minConfidence: 2,
         action: ({ query }) => {
             speak("Playing it now.");
-            openTab(`https://open.spotify.com/search/${query}`);
+            openSpotifyAndPlay(query);
+        },
+    },
+    {
+        intent: "MUSIC_PAUSE",
+        minConfidence: 3,
+        action: () => {
+            speak("Pausing the music.");
+            controlSpotify("pause");
+        },
+    },
+    {
+        intent: "MUSIC_RESUME",
+        minConfidence: 3,
+        action: () => {
+            speak("Resuming playback.");
+            controlSpotify("play");
+        },
+    },
+    {
+        intent: "MUSIC_STOP",
+        minConfidence: 3,
+        action: () => {
+            speak("Stopping the music.");
+            controlSpotify("stop");
+        },
+    },
+    {
+        intent: "MUSIC_NEXT",
+        minConfidence: 3,
+        action: () => {
+            speak("Playing the next song.");
+            controlSpotify("next");
+        },
+    },
+    {
+        intent: "MUSIC_PREV",
+        minConfidence: 3,
+        action: () => {
+            speak("Playing the previous song.");
+            controlSpotify("prev");
+        },
+    },
+    {
+        intent: "MUSIC_REPLAY",
+        minConfidence: 3,
+        action: () => {
+            speak("Replaying this song.");
+            controlSpotify("replay");
         },
     },
     {
