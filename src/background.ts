@@ -38,6 +38,35 @@ function openTab(url: string) {
     chrome.tabs.create({ url });
 }
 
+function humanizeTime(d: Date) {
+    const hour24 = d.getHours();
+    const minutes = d.getMinutes();
+    const hour12 = hour24 % 12 || 12;
+    const am = hour24 >= 12 ? "PM" : "AM";
+
+    const nextHour24 = (hour24 + 1) % 24;
+    const nextHour12 = nextHour24 % 12 || 12;
+    const nextAm = nextHour24 >= 12 ? "PM" : "AM";
+
+    const isDaytime = hour24 >= 7 && hour24 < 19;
+    const amPm = isDaytime ? "" : ` ${am}`;
+    const nextAmPm = isDaytime ? "" : ` ${nextAm}`;
+
+    if (minutes === 0) return `${hour12} o'clock${amPm}`;
+    if (minutes === 15) return `a quarter past ${hour12}${amPm}`;
+    if (minutes === 30) return `half past ${hour12}${amPm}`;
+    if (minutes === 45) return `a quarter to ${nextHour12}${nextAmPm}`;
+
+    if (minutes < 30) {
+        const m = minutes === 1 ? "minute" : "minutes";
+        return `${minutes} ${m} past ${hour12}${amPm}`;
+    }
+
+    const to = 60 - minutes;
+    const m = to === 1 ? "minute" : "minutes";
+    return `${to} ${m} to ${nextHour12}${nextAmPm}`;
+}
+
 function controlSpotify(action: "play" | "pause" | "next" | "prev" | "replay" | "stop") {
     chrome.tabs.query({ url: "*://open.spotify.com/*" }, (tabs) => {
         const target = tabs.find((t) => t.id) || null;
@@ -917,10 +946,7 @@ const TASK_REGISTRY: Task[] = [
         minConfidence: 2,
         action: () => {
             const d = new Date();
-            const hr = d.getHours() % 12 || 12;
-            const mins = d.getMinutes().toString().padStart(2, "0");
-            const am = d.getHours() >= 12 ? "PM" : "AM";
-            speak(`The time is ${hr}:${mins} ${am}`);
+            speak(`The time is ${humanizeTime(d)}.`);
         },
     },
     {
