@@ -4,13 +4,24 @@
     "version": "0.0.1",
     "description": "AI-powered browser companion extension",
     "action": {
-        "default_popup": "popup.html"
+        "default_popup": "/src/popup.html"
     },
     "permissions": [
         "storage",
-        "tabs"
+        "tabs",
+        "offscreen",
+        "tts",
+        "scripting",
+        "activeTab"
     ],
     "background": {
         "service_worker": "background.js"
-    }
+    },
+    "host_permissions": [
+        "https://open.spotify.com/*",
+        "https://ipapi.co/*",
+        "https://api.rss2json.com/*",
+        "https://wttr.in/*",
+        "https://api.duckduckgo.com/*"
+    ]
 }
