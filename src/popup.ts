@@ -21,6 +21,10 @@ let stream: MediaStream | null = null;
 let animationId: number | null = null;
 let isVisualizerActive = false;
 let processingTimeout: number | null = null;
+let listeningTimeout: number | null = null;
+let noSpeechRetryCount = 0;
+const NO_SPEECH_RETRY_LIMIT = 2;
+const NO_SPEECH_RETRY_DELAY_MS = 600;
 
 
 /**
@@ -136,6 +140,11 @@ function stopProcessingState() {
 
 recognition.onresult = (event: any) => {
     stopProcessingState();
+    if (listeningTimeout) {
+        clearTimeout(listeningTimeout);
+        listeningTimeout = null;
+    }
+    noSpeechRetryCount = 0;
     const text = event.results[0][0].transcript;
 
     if (textOutput) {
@@ -147,7 +156,6 @@ recognition.onresult = (event: any) => {
         text
     });
 
-    isListening = false;
 };
 
 recognition.onstart = () => {
@@ -158,12 +166,20 @@ recognition.onstart = () => {
     if (textOutput) {
         textOutput.textContent = "Listening...";
     }
+
+    // Set a timeout to force stop listening if no speech is detected within 10 seconds
+    listeningTimeout = window.setTimeout(() => {
+        if (isListening) {
+            recognition.stop();
+        }
+    }, 10000);
 };
 
 recognition.onspeechstart = () => {
     if (textOutput) {
         textOutput.textContent = "Listening...";
     }
+    noSpeechRetryCount = 0;
 };
 
 recognition.onspeechend = () => {
@@ -191,9 +207,15 @@ recognition.onend = () => {
 
 recognition.onerror = (event: any) => {
     stopProcessingState();
+    if (listeningTimeout) {
+        clearTimeout(listeningTimeout);
+        listeningTimeout = null;
+    }
     visualizer?.classList.remove('listening');
     stopVisualizer();
-    console.error("Recognition error:", event.error);
+    if (event.error !== 'no-speech') {
+        console.error("Recognition error:", event.error);
+    }
     if (event.error === 'not-allowed' || event.error === 'service-not-allowed') {
         if (textOutput) {
             textOutput.textContent = "Microphone access denied. Please allow permissions.";
@@ -202,10 +224,22 @@ recognition.onerror = (event: any) => {
         }
         retryBtn?.classList.remove('hidden');
     } else if (event.error === 'no-speech') {
-        if (textOutput) {
-            textOutput.textContent = "No speech detected. Try again.";
+        if (noSpeechRetryCount < NO_SPEECH_RETRY_LIMIT) {
+            noSpeechRetryCount += 1;
+            if (textOutput) {
+                textOutput.textContent = "I didn't catch that. Listening again...";
+            }
+            window.setTimeout(() => {
+                if (!isListening) {
+                    startListening();
+                }
+            }, NO_SPEECH_RETRY_DELAY_MS);
+        } else {
+            if (textOutput) {
+                textOutput.textContent = "No speech detected. Try again.";
+            }
+            retryBtn?.classList.remove('hidden');
         }
-        retryBtn?.classList.remove('hidden');
     }
 };
 
@@ -261,8 +295,14 @@ document.addEventListener("DOMContentLoaded", () => {
     });
 
     chrome.runtime.onMessage.addListener((msg) => {
+        if (msg.type === "OPPA_LISTEN_STATUS") {
+            if (msg.status === "speaking") {
+                stopListening();
+            } else if (msg.status === "ready_to_listen") {
+                startListening();
+            }
+        }
         if (msg.type === "OPPA_SPEECH_START") {
-            stopListening();
             startSpeaking();
             speech?.classList.remove('hidden');
             listen?.classList.add('hidden');
@@ -271,7 +311,6 @@ document.addEventListener("DOMContentLoaded", () => {
             stopSpeaking();
             speech?.classList.add('hidden');
             listen?.classList.remove('hidden');
-            startListening();
         }
     });
 });

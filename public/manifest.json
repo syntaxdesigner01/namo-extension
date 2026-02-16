@@ -22,6 +22,7 @@
         "https://ipapi.co/*",
         "https://api.rss2json.com/*",
         "https://wttr.in/*",
-        "https://api.duckduckgo.com/*"
+        "https://api.duckduckgo.com/*",
+        "https://api.openweathermap.org/*"
     ]
 }
