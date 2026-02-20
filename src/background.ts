@@ -5,7 +5,6 @@ let hasGreetedThisSession = false;
 let latestNews: { title: string; link: string; summary: string }[] = [];
 let lastFetchTime = 0;
 let cachedNewsOptions: { scope: string; topic?: { code: string; label: string } | null } | null = null;
-let weatherState: { pendingCityPrompt: boolean } = { pendingCityPrompt: false };
 
 chrome.storage.local.get(["latestNews", "lastFetchTime", "cachedNewsOptions"], (result) => {
     if (result.latestNews) {
@@ -13,11 +12,6 @@ chrome.storage.local.get(["latestNews", "lastFetchTime", "cachedNewsOptions"], (
     }
     if (result.lastFetchTime) lastFetchTime = result.lastFetchTime as number;
     if (result.cachedNewsOptions) cachedNewsOptions = result.cachedNewsOptions as { scope: string; topic?: { code: string; label: string } | null } | null;
-});
-chrome.storage.local.get(["weatherState"], (result) => {
-    if (result.weatherState) {
-        weatherState = result.weatherState as { pendingCityPrompt: boolean };
-    }
 });
 const newsState = {
     pending: false,
@@ -41,8 +35,6 @@ const OPPA_VOICE = {
     volume: 1,
     voiceName: "Google UK English Female",
 };
-
-const OPEN_WEATHER_API_KEY = "93d645239df7bcdd98c147f54d44e354";
 
 let suppressListenReady = false;
 let listenSuppressCount = 0;
@@ -296,115 +288,6 @@ async function fetchWithRetry(url: string, options: RequestInit = {}, retries = 
         }
     }
     throw new Error("Failed to fetch");
-}
-
-function updateWeatherState(patch: Partial<{ pendingCityPrompt: boolean }>) {
-    weatherState = { ...weatherState, ...patch };
-    chrome.storage.local.set({ weatherState });
-}
-
-async function getUserCoords(): Promise<{ lat: number; lon: number } | null> {
-    const [tab] = await chrome.tabs.query({
-        active: true,
-        currentWindow: true,
-    });
-
-    if (!tab?.id || !tab.url || !tab.url.startsWith("http") || tab.url.startsWith("chrome://")) {
-        return null;
-    }
-
-    try {
-        const results = await chrome.scripting.executeScript({
-            target: { tabId: tab.id },
-            func: () =>
-                new Promise<{ lat: number; lon: number } | null>((resolve) => {
-                    if (!("geolocation" in navigator)) {
-                        resolve(null);
-                        return;
-                    }
-                    navigator.geolocation.getCurrentPosition(
-                        (pos) => resolve({ lat: pos.coords.latitude, lon: pos.coords.longitude }),
-                        () => resolve(null),
-                        { enableHighAccuracy: false, timeout: 6000, maximumAge: 300000 }
-                    );
-                }),
-        });
-        return results?.[0]?.result ?? null;
-    } catch (e) {
-        console.error("Geolocation failed", e);
-        return null;
-    }
-}
-
-function describeTemp(tempC: number) {
-    if (tempC <= 0) return "freezing";
-    if (tempC <= 10) return "chilly";
-    if (tempC <= 18) return "cool";
-    if (tempC <= 24) return "mild";
-    if (tempC <= 30) return "warm";
-    return "hot";
-}
-
-function describeWind(speed: number) {
-    if (speed <= 2.5) return "light breeze";
-    if (speed <= 6) return "gentle breeze";
-    if (speed <= 10) return "breezy";
-    if (speed <= 15) return "windy";
-    return "very windy";
-}
-
-function buildWeatherSpeech(data: any, fallbackLocation?: string) {
-    const name = (data?.name || fallbackLocation || "your area").toString();
-    const description = (data?.weather?.[0]?.description || "").toString();
-    const temp = Number.isFinite(data?.main?.temp) ? Number(data.main.temp) : null;
-    const feels = Number.isFinite(data?.main?.feels_like) ? Number(data.main.feels_like) : null;
-    const humidity = Number.isFinite(data?.main?.humidity) ? Number(data.main.humidity) : null;
-    const wind = Number.isFinite(data?.wind?.speed) ? Number(data.wind.speed) : null;
-
-    if (temp === null) {
-        return `I couldn't read the temperature for ${name}.`;
-    }
-
-    const roundedTemp = Math.round(temp);
-    const tempLabel = describeTemp(temp);
-    const locationIntro = name ? `In ${name} right now, it's` : `Right now, it's`;
-    const conditionPart = description ? ` with ${description} overhead.` : ".";
-    const first = `${locationIntro} ${tempLabel} — around ${roundedTemp}°C —${conditionPart}`;
-
-    let second = "";
-    if (feels !== null) {
-        const roundedFeels = Math.round(feels);
-        if (Math.abs(roundedFeels - roundedTemp) <= 1) {
-            second = "It feels about the same as the actual temperature.";
-        } else {
-            second = `It feels more like ${roundedFeels}°C.`;
-        }
-        if (humidity !== null) {
-            if (humidity >= 70) {
-                second += " The humidity is high, so it might feel a little sticky.";
-            } else if (humidity <= 35) {
-                second += " The air is pretty dry.";
-            }
-        }
-    }
-
-    let third = "";
-    if (wind !== null) {
-        const windDesc = describeWind(wind);
-        if (windDesc === "light breeze") {
-            third = "There's just a light breeze, nothing serious.";
-        } else if (windDesc === "gentle breeze") {
-            third = "There's a gentle breeze out there.";
-        } else if (windDesc === "breezy") {
-            third = "It's a bit breezy right now.";
-        } else if (windDesc === "windy") {
-            third = "It's fairly windy right now.";
-        } else {
-            third = "It's very windy right now.";
-        }
-    }
-
-    return [first, second, third].filter(Boolean).join(" ");
 }
 
 async function fetchNews(options: { scope: "local" | "international"; topic?: { code: string; label: string } | null }) {
@@ -1897,55 +1780,25 @@ const TASK_REGISTRY: Task[] = [
         minConfidence: 2,
         action: () => {
             const d = new Date();
-            const hr = d.getHours() % 12 || 12;
-            const mins = d.getMinutes().toString().padStart(2, "0");
-            const am = d.getHours() >= 12 ? "PM" : "AM";
-            speak(`The time is ${hr}:${mins} ${am}`);
+            speak(`The time is ${humanizeTime(d)}.`);
         },
     },
     {
         intent: "WEATHER",
         minConfidence: 2,
         action: async ({ query }) => {
-            const hasCity = Boolean(query && query.trim());
-            const city = hasCity ? query.trim() : "";
-
-            speak(`Checking the weather ${hasCity ? `for ${city}` : ""}.`);
-
+            speak(`Checking the weather ${query ? `for ${query}` : ""}.`);
             try {
-                let weatherUrl = "";
-                let fallbackLocation = "";
-
-                if (hasCity) {
-                    updateWeatherState({ pendingCityPrompt: false });
-                    fallbackLocation = city;
-                    weatherUrl = `https://api.openweathermap.org/data/2.5/weather?q=${encodeURIComponent(city)}&appid=${OPEN_WEATHER_API_KEY}&units=metric`;
-                } else {
-                    if (weatherState.pendingCityPrompt) {
-                        speak("Which city should I use?");
-                        return;
-                    }
-                    const coords = await getUserCoords();
-                    if (coords) {
-                        weatherUrl = `https://api.openweathermap.org/data/2.5/weather?lat=${coords.lat}&lon=${coords.lon}&appid=${OPEN_WEATHER_API_KEY}&units=metric`;
-                    } else {
-                        updateWeatherState({ pendingCityPrompt: true });
-                        speak("I couldn't get your location. Which city should I use?");
-                        return;
-                    }
+                // Using wttr.in for text summary as DuckDuckGo API often lacks weather text
+                const response = await fetch(`https://wttr.in/${query}?format=%C+and+%t`);
+                if (response.ok) {
+                    const text = await response.text();
+                    speak(`It is currently ${text}.`);
                 }
-
-                const response = await fetch(weatherUrl);
-                if (!response.ok) {
-                    throw new Error(`Weather HTTP ${response.status}`);
-                }
-                const data = await response.json();
-                const speech = buildWeatherSpeech(data, fallbackLocation);
-                speak(speech);
             } catch (e) {
                 console.error("Weather fetch failed", e);
-                speak("Sorry, I couldn't get the weather right now.");
             }
+            openTab(`https://www.google.com/search?q=weather+${query}`);
         },
     },
     {
