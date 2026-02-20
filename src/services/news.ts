@@ -1,5 +1,5 @@
 import { speak, speakSequential } from "../utils/speech.ts";
-import { buildNewsRssUrl, fetchWithRetry } from "../utils/helpers.ts";
+import { buildNewsRssUrl, fetchWithRetry, splitIntoParagraphs } from "../utils/helpers.ts";
 import { getCountryCode } from "../utils/helpers.ts";
 import { latestNews, setLatestNews, lastFetchTime, setLastFetchTime, cachedNewsOptions, setCachedNewsOptions, newsState } from "../state.ts";
 import { readTabById } from "./reader.ts";
@@ -65,11 +65,14 @@ export async function fetchNews(options: { scope: "local" | "international"; top
 
         let fetchedItems: NewsItem[] = [];
         if (data?.status === "ok" && Array.isArray(data.items) && data.items.length > 0) {
-            fetchedItems = data.items.slice(0, 6).map((item: any) => ({
-                title: item.title.split(" - ")[0],
-                link: item.link,
-                summary: (item.description || item.content || "").replace(/<[^>]+>/g, " ").replace(/\s+/g, " ").trim()
-            }));
+            fetchedItems = data.items.slice(0, 6).map((item: any) => {
+                const rawSummary = (item.description || item.content || "").replace(/<[^>]+>/g, " ").replace(/\s+/g, " ").trim();
+                return {
+                    title: item.title.split(" - ")[0],
+                    link: item.link,
+                    summary: splitIntoParagraphs(rawSummary).join(" ")
+                };
+            });
         } else {
             // Fallback: fetch RSS XML directly and parse minimal fields
             const rssResp = await fetchWithRetry(rssUrl);
@@ -81,7 +84,8 @@ export async function fetchNews(options: { scope: "local" | "international"; top
                 const descMatch = raw.match(/<description><!\[CDATA\[(.*?)\]\]><\/description>|<description>(.*?)<\/description>/i);
                 const title = (titleMatch?.[1] || titleMatch?.[2] || "").split(" - ")[0].trim();
                 const link = (linkMatch?.[1] || "").trim();
-                const summary = (descMatch?.[1] || descMatch?.[2] || "").replace(/<[^>]+>/g, " ").replace(/\s+/g, " ").trim();
+                const rawSummary = (descMatch?.[1] || descMatch?.[2] || "").replace(/<[^>]+>/g, " ").replace(/\s+/g, " ").trim();
+                const summary = splitIntoParagraphs(rawSummary).join(" ");
                 return { title, link, summary };
             }).filter((n) => n.title && n.link);
         }
