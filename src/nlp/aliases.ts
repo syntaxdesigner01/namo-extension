@@ -1,0 +1,16 @@
+export const ALIASES: Record<string, string> = {
+    go: "open",
+    launch: "open",
+    listen: "play",
+    picture: "image",
+    photo: "image",
+    images: "image",
+    get: "open",
+    whats: "what",
+    hows: "how",
+    whos: "who",
+    summarise: "summarize",
+    loacal: "local",
+    internations: "international",
+    fiance: "finance",
+};
