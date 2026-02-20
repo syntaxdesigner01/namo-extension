@@ -1897,7 +1897,10 @@ const TASK_REGISTRY: Task[] = [
         minConfidence: 2,
         action: () => {
             const d = new Date();
-            speak(`The time is ${humanizeTime(d)}.`);
+            const hr = d.getHours() % 12 || 12;
+            const mins = d.getMinutes().toString().padStart(2, "0");
+            const am = d.getHours() >= 12 ? "PM" : "AM";
+            speak(`The time is ${hr}:${mins} ${am}`);
         },
     },
     {
