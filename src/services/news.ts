@@ -6,10 +6,15 @@ import { readTabById } from "./reader.ts";
 import type { NewsItem, NewsTopic } from "../types.ts";
 
 export async function readNewsSummaryThenFull(item: { title: string; summary: string; link: string }) {
-    const summary = item.summary
-        ? `${item.title}. ${item.summary}`
-        : `${item.title}. I can open the full article if you'd like.`;
-    await speakSequential([summary, "Opening the full article and reading it."]);
+    const intro = `Here is the summary on ${item.title}.`;
+    let body = item.summary || "I can open the full article if you'd like.";
+
+    // De-duplicate: if the summary starts with the title, remove it
+    if (body.toLowerCase().startsWith(item.title.toLowerCase())) {
+        body = body.substring(item.title.length).replace(/^[.\s:-]+/, "").trim();
+    }
+
+    await speakSequential([intro, body, "Opening the full article and reading it."]);
 
     chrome.tabs.create({ url: item.link, active: true }, (tab) => {
         if (!tab?.id) return;
@@ -24,10 +29,15 @@ export async function readNewsSummaryThenFull(item: { title: string; summary: st
 }
 
 export async function readNewsSummaryAndAsk(item: { title: string; summary: string; link: string }) {
-    const summary = item.summary
-        ? `${item.title}. ${item.summary}`
-        : `${item.title}. I couldn't find a summary, but I can open the full article.`;
-    await speakSequential([summary, "Would you like me to read the full article?"]);
+    const intro = `Here is the summary on ${item.title}.`;
+    let body = item.summary || "I couldn't find a summary, but I can open the full article.";
+
+    // De-duplicate: if the summary starts with the title, remove it
+    if (body.toLowerCase().startsWith(item.title.toLowerCase())) {
+        body = body.substring(item.title.length).replace(/^[.\s:-]+/, "").trim();
+    }
+
+    await speakSequential([intro, body, "Would you like me to read the full article?"]);
     newsState.pendingFullChoice = true;
 }
 
