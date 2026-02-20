@@ -285,15 +285,6 @@ document.addEventListener("DOMContentLoaded", () => {
         console.warn('Background script did not respond within timeout period.');
     }, 5000); // 5 seconds timeout
 
-    chrome.runtime.sendMessage({ type: "OPPA_POPUP_OPENED" }, (response) => {
-        clearTimeout(timeoutId);
-        loading?.classList.add('hidden');
-        startChat?.classList.remove('hidden');
-        if (response?.status === "ready_to_listen") {
-            startListening();
-        }
-    });
-
     chrome.runtime.onMessage.addListener((msg) => {
         if (msg.type === "OPPA_LISTEN_STATUS") {
             if (msg.status === "speaking") {
@@ -311,6 +302,15 @@ document.addEventListener("DOMContentLoaded", () => {
             stopSpeaking();
             speech?.classList.add('hidden');
             listen?.classList.remove('hidden');
+        }
+    });
+
+    chrome.runtime.sendMessage({ type: "OPPA_POPUP_OPENED" }, (response) => {
+        clearTimeout(timeoutId);
+        loading?.classList.add('hidden');
+        startChat?.classList.remove('hidden');
+        if (response?.status === "ready_to_listen") {
+            startListening();
         }
     });
 });
