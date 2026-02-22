@@ -3,9 +3,13 @@ import { ALIASES } from "../nlp/aliases.ts";
 export function parse(input: string): string[] {
     return input
         .toLowerCase()
-        .replace(/[^\w\s]/g, "")
+        // Keep alphanumeric but also common math symbols, and ensure symbols are surrounded by spaces
+        .replace(/([+\-*\/^%()=$€£])/g, " $1 ")
+        // Remove other special chars that aren't spaces or alphanumeric (keep dots for decimals)
+        .replace(/[^a-z0-9\s+\-*\/^%()=.$€£]/g, "")
         .trim()
-        .split(/\s+/);
+        .split(/\s+/)
+        .filter(Boolean);
 }
 
 export function normalizeTokens(tokens: string[]): string[] {

@@ -13,4 +13,7 @@ export const ALIASES: Record<string, string> = {
     loacal: "local",
     internations: "international",
     fiance: "finance",
+    math: "calculate",
+    maths: "calculate",
+    compute: "calculate",
 };

@@ -123,14 +123,152 @@ export function detectIntent(tokens: string[]): IntentResult {
     }
 
     // ---- Math
-    if (
-        (hasPhrase(tokens, ["what", "is"]) || hasPhrase(tokens, ["how", "much"])) &&
-        tokens.some(t => ["plus", "minus", "times", "divided", "multiply", "add", "subtract"].includes(t))
-    ) {
-        scores.CALCULATE += 5;
+    const mathTokens = [
+        "plus", "minus", "times", "multiplied", "divided", "multiply", "add", "subtract",
+        "power", "squared", "cubed", "root", "percent", "percentage", "factorial",
+        "sin", "cos", "tan", "log", "ln", "exp", "abs", "modulo", "mod", "pi",
+        "sum", "total", "product", "quotient", "difference", "average", "mean",
+        "max", "maximum", "min", "minimum", "floor", "ceil", "round", "rounding",
+        "cosine", "sine", "tangent", "arcsin", "arccos", "arctan", "hypot",
+        "hypotenuse", "logarithm", "log10", "log2", "pow", "sqrt", "cbrt",
+        "solve", "compute", "calculate", "math", "maths", "arithmetic",
+        "math", "maths", "arithmetic", "equation", "formula", "eval", "evaluate", "expression", "digit", "numeric",
+        "remainder", "logarithmic", "exponential", "absolute", "trigonometry",
+        "currency", "convert", "conversion", "exchange", "rate", "usd", "eur", "gbp", "jpy", "cad", "aud", "naira", "ngn",
+        "krw", "brl", "mxn", "sar", "try", "chf", "idr", "twd", "pln", "ars", "sek", "nok", "sgd", "thb", "aed", "zar", "egp", "cop", "clp", "myr", "php", "vnd", "pkr", "bdt", "irr", "dkk", "czk", "hkd", "nzd", "ils", "kzt", "qar", "kwd", "huf", "uah", "pen", "ron", "omr", "mad",
+        "btc", "eth", "sol", "bnb", "xrp", "ada", "avax", "dot", "doge", "shib", "matic", "ltc", "trx", "link", "uni", "bch", "atom", "xlm", "xmr", "etc", "icp", "fil", "apt", "near", "arb", "op", "stx", "rndr", "inj", "tia", "sei", "sui", "grt", "algo", "qnt", "ftm", "sand", "mana", "axs", "flow", "eos", "theta"
+    ];
+
+    const mathSymbols = ["+", "-", "*", "/", "^", "%", "sqrt", "cbrt", "$", "€", "£"];
+
+    const hasMathOperator = tokens.some(t => mathTokens.includes(t) || mathSymbols.some(s => t.includes(s)));
+    const hasMathAction = tokens.includes("calculate") || tokens.includes("compute") || tokens.includes("solve") || tokens.includes("math") || tokens.includes("maths") || tokens.includes("convert");
+
+    // Core math detection
+    if (hasMathAction) {
+        scores.CALCULATE += 6;
     }
-    if (tokens.includes("calculate")) {
-        scores.CALCULATE += 5;
+
+    // High priority: Direct numeric expressions (e.g., "1 + 1", "5 * 10")
+    const numericTokens = tokens.filter(t => !isNaN(parseFloat(t)));
+    const operatorTokens = tokens.filter(t => mathSymbols.includes(t));
+
+    if (numericTokens.length >= 2 && operatorTokens.length >= 1) {
+        scores.CALCULATE += 8;
+    }
+
+    // Currency conversion pattern: [Numeric] [Currency] to [Currency]
+    const currencyCodes = [
+        "usd", "eur", "gbp", "jpy", "cad", "aud", "naira", "ngn", "dollars", "pounds", "euro", "yen",
+        "krw", "won", "brl", "real", "mxn", "peso", "sar", "riyal", "try", "lira", "chf", "franc", "idr", "rupiah", "twd", "pln", "zloty",
+        "ars", "sek", "krona", "nok", "krone", "sgd", "thb", "baht", "aed", "dirham", "zar", "rand", "egp", "cop", "clp", "myr", "ringgit", "php", "vnd", "dong",
+        "pkr", "bdt", "taka", "irr", "dkk", "czk", "koruna", "hkd", "nzd", "ils", "shekel", "kzt", "qar", "kwd", "dinar", "huf", "forint", "uah", "hryvnia", "pen", "ron", "leu", "omr", "mad",
+        "btc", "bitcoin", "eth", "ethereum", "sol", "solana", "bnb", "binance", "xrp", "ripple", "ada", "cardano", "avax", "avalanche", "dot", "polkadot",
+        "doge", "dogecoin", "shib", "shiba", "matic", "polygon", "ltc", "litecoin", "trx", "tron", "link", "chainlink", "uni", "uniswap", "bch", "atom", "xlm", "xmr", "etc", "icp", "fil", "apt", "near", "arb", "op", "stx", "rndr", "inj", "tia", "sei", "sui", "grt", "algo", "qnt", "ftm", "sand", "mana", "axs", "flow", "eos", "theta"
+    ];
+    const hasCurrencyToCurrency = tokens.includes("to") && tokens.some(t => currencyCodes.includes(t));
+    if (numericTokens.length >= 1 && hasCurrencyToCurrency) {
+        scores.CALCULATE += 12;
+    }
+
+    // Pattern: [Number] [Operator] [Number]
+    for (let i = 0; i < tokens.length - 2; i++) {
+        if (!isNaN(parseFloat(tokens[i])) &&
+            (mathSymbols.includes(tokens[i + 1]) || mathTokens.includes(tokens[i + 1])) &&
+            !isNaN(parseFloat(tokens[i + 2]))) {
+            scores.CALCULATE += 10;
+            break;
+        }
+    }
+
+    // Extreme boost: If the ENTIRE message is made of math components and basic helpers
+    const mathHelpers = ["is", "the", "what", "whats", "result", "answer", "equal", "equals", "of", "and", "for", "to", "in"];
+    const isPureMath = tokens.every(t =>
+        !isNaN(parseFloat(t)) ||
+        mathSymbols.some(s => t.includes(s)) ||
+        mathTokens.includes(t) ||
+        mathHelpers.includes(t) ||
+        currencyCodes.includes(t)
+    );
+
+    if (isPureMath && tokens.length >= 1 && (numericTokens.length >= 1 || operatorTokens.length >= 1 || hasCurrencyToCurrency)) {
+        scores.CALCULATE += 15;
+    }
+
+    // Natural language math phrases (extended variations)
+    if (
+        hasPhrase(tokens, ["what", "is"]) ||
+        hasPhrase(tokens, ["how", "much"]) ||
+        hasPhrase(tokens, ["calculate", "the"]) ||
+        hasPhrase(tokens, ["compute", "this"]) ||
+        hasPhrase(tokens, ["solve", "for"]) ||
+        hasPhrase(tokens, ["result", "of"]) ||
+        hasPhrase(tokens, ["value", "of"]) ||
+        hasPhrase(tokens, ["sum", "of"]) ||
+        hasPhrase(tokens, ["product", "of"]) ||
+        hasPhrase(tokens, ["difference", "between"]) ||
+        hasPhrase(tokens, ["quotient", "of"]) ||
+        hasPhrase(tokens, ["square", "root"]) ||
+        hasPhrase(tokens, ["cube", "root"]) ||
+        hasPhrase(tokens, ["power", "of"]) ||
+        hasPhrase(tokens, ["sin", "of"]) ||
+        hasPhrase(tokens, ["cos", "of"]) ||
+        hasPhrase(tokens, ["tan", "of"]) ||
+        hasPhrase(tokens, ["log", "of"]) ||
+        hasPhrase(tokens, ["factorial", "of"]) ||
+        hasPhrase(tokens, ["absolute", "value"]) ||
+        hasPhrase(tokens, ["percentage", "of"]) ||
+        hasPhrase(tokens, ["percent", "of"]) ||
+        hasPhrase(tokens, ["multiplied", "by"]) ||
+        hasPhrase(tokens, ["divided", "by"]) ||
+        hasPhrase(tokens, ["added", "to"]) ||
+        hasPhrase(tokens, ["subtracted", "from"]) ||
+        hasPhrase(tokens, ["raised", "to"]) ||
+        hasPhrase(tokens, ["remainder", "of"]) ||
+        hasPhrase(tokens, ["do", "the", "math"]) ||
+        hasPhrase(tokens, ["math", "problem"]) ||
+        hasPhrase(tokens, ["work", "out"]) ||
+        hasPhrase(tokens, ["give", "me", "the", "answer"]) ||
+        hasPhrase(tokens, ["what", "does", "it", "equal"]) ||
+        hasPhrase(tokens, ["total", "of"]) ||
+        hasPhrase(tokens, ["add", "up"]) ||
+        hasPhrase(tokens, ["how", "many", "is"]) ||
+        hasPhrase(tokens, ["find", "the", "sum"]) ||
+        hasPhrase(tokens, ["solve", "this"]) ||
+        hasPhrase(tokens, ["evaluate", "this"]) ||
+        hasPhrase(tokens, ["math", "calculation"]) ||
+        hasPhrase(tokens, ["numeric", "value"]) ||
+        hasPhrase(tokens, ["solve", "equation"]) ||
+        hasPhrase(tokens, ["find", "the", "result"]) ||
+        hasPhrase(tokens, ["answer", "to"]) ||
+        hasPhrase(tokens, ["calculate", "for", "me"]) ||
+        hasPhrase(tokens, ["crunch", "the", "numbers"]) ||
+        hasPhrase(tokens, ["total", "amount"]) ||
+        hasPhrase(tokens, ["sum", "together"]) ||
+        hasPhrase(tokens, ["math", "for"]) ||
+        hasPhrase(tokens, ["average", "of"]) ||
+        hasPhrase(tokens, ["mean", "of"]) ||
+        hasPhrase(tokens, ["max", "of"]) ||
+        hasPhrase(tokens, ["min", "of"]) ||
+        hasPhrase(tokens, ["absolute", "of"]) ||
+        hasPhrase(tokens, ["square", "of"]) ||
+        hasPhrase(tokens, ["cube", "of"]) ||
+        hasPhrase(tokens, ["floor", "of"]) ||
+        hasPhrase(tokens, ["ceil", "of"]) ||
+        hasPhrase(tokens, ["remainder", "when"]) ||
+        hasPhrase(tokens, ["convert", "to"]) ||
+        hasPhrase(tokens, ["exchange", "rate"]) ||
+        hasPhrase(tokens, ["how", "many"])
+    ) {
+        if (hasMathOperator || tokens.some(t => !isNaN(parseFloat(t))) || hasCurrencyToCurrency) {
+            scores.CALCULATE += 5;
+        }
+    }
+
+    // Boost if multiple math tokens are present
+    const mathTokenCount = tokens.filter(t => mathTokens.includes(t)).length;
+    if (mathTokenCount >= 2) {
+        scores.CALCULATE += 4;
     }
 
     // ---- Play music (explicit phrase, avoids "start" conflicting with reading)
@@ -513,7 +651,7 @@ export function detectIntent(tokens: string[]): IntentResult {
         if (t === "name") scores.IDENTITY += 2;
         if (t === "age") scores.AGE += 2;
         if (["news", "headline", "headlines", "article", "articles", "story", "stories"].includes(t)) scores.NEWS += 2;
-        if (["calculate", "math", "plus", "minus", "multiply", "divide"].includes(t)) scores.CALCULATE += 2;
+        if (["calculate", "math", "plus", "minus", "multiply", "divide", "sum", "total", "product", "quotient", "difference", "average", "solve", "compute", "evaluate"].includes(t)) scores.CALCULATE += 2;
         if (["all"].includes(t)) scores.OPEN_ALL_NEWS += 2;
         if (["reader", "reading"].includes(t)) scores.READ_PAGE += 2;
     });

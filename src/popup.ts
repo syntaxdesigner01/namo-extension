@@ -152,6 +152,7 @@ recognition.onresult = (event: any) => {
 
 recognition.onstart = () => {
     isListening = true;
+    showMainContent();
     stopProcessingState();
     visualizer?.classList.add('listening');
     setupVisualizer();
@@ -189,26 +190,6 @@ recognition.onend = () => {
     stopVisualizer();
 };
 
-recognition.onerror = (event: any) => {
-    stopProcessingState();
-    visualizer?.classList.remove('listening');
-    stopVisualizer();
-    console.error("Recognition error:", event.error);
-    if (event.error === 'not-allowed' || event.error === 'service-not-allowed') {
-        if (textOutput) {
-            textOutput.textContent = "Microphone access denied. Please allow permissions.";
-            textOutput.classList.remove("text-white");
-            textOutput.classList.add("text-red-500");
-        }
-        retryBtn?.classList.remove('hidden');
-    } else if (event.error === 'no-speech') {
-        if (textOutput) {
-            textOutput.textContent = "No speech detected. Try again.";
-        }
-        retryBtn?.classList.remove('hidden');
-    }
-};
-
 // Ensure the element exists before adding event listeners or calling functions.
 if (visualizer) {
     visualizer.addEventListener('click', () => {
@@ -228,28 +209,62 @@ if (retryBtn) {
         retryBtn.classList.add('hidden');
         if (textOutput) {
             textOutput.textContent = "";
-            textOutput.classList.remove("text-red-500");
+            textOutput.classList.remove("text-red-400", "text-amber-200", "text-amber-200/60");
             textOutput.classList.add("text-white");
         }
         startListening();
     });
 }
 
+const mainContent = document.getElementById('main-content');
+const skeletonLoader = document.getElementById('skeleton-loader');
+const networkError = document.getElementById('network-error');
+const networkRetryBtn = document.getElementById('network-retry-btn');
+let initTimeoutId: number | null = null;
+let isInitialized = false;
+
+function showMainContent() {
+    if (isInitialized) return;
+    isInitialized = true;
+    if (initTimeoutId) clearTimeout(initTimeoutId);
+
+    // Smooth transition
+    setTimeout(() => {
+        if (skeletonLoader) skeletonLoader.style.display = 'none';
+        if (networkError) networkError.style.display = 'none';
+        if (mainContent) mainContent.style.display = 'flex';
+    }, 300);
+}
+
+function showNetworkError() {
+    if (initTimeoutId) clearTimeout(initTimeoutId);
+    if (skeletonLoader) skeletonLoader.style.display = 'none';
+    if (mainContent) mainContent.style.display = 'none';
+    if (networkError) networkError.style.display = 'flex';
+}
+
+if (networkRetryBtn) {
+    networkRetryBtn.addEventListener('click', () => {
+        if (networkError) networkError.style.display = 'none';
+        if (skeletonLoader) skeletonLoader.style.display = 'flex';
+
+        // Restart init timeout
+        initTimeoutId = window.setTimeout(showNetworkError, 120000); // 2 minutes
+        startListening();
+    });
+}
+
 document.addEventListener("DOMContentLoaded", () => {
-    const startChat = document.getElementById('Start-chat');
     const speech = document.getElementById('speech');
     const listen = document.getElementById('listen');
-    const loading = document.getElementById('loading');
 
-    startChat?.classList.add('hidden');
-    loading?.classList.remove('hidden');
+    // Show skeleton initially
+    if (skeletonLoader) skeletonLoader.style.display = 'flex';
+    if (mainContent) mainContent.style.display = 'none';
+    if (networkError) networkError.style.display = 'none';
 
-    // Set a timeout to handle cases where the background script doesn't respond
-    const timeoutId = setTimeout(() => {
-        loading?.classList.add('hidden');
-        startChat?.classList.remove('hidden');
-        console.warn('Background script did not respond within timeout period.');
-    }, 5000); // 5 seconds timeout
+    // Set a 2-minute timeout for network issues
+    initTimeoutId = window.setTimeout(showNetworkError, 120000);
 
     chrome.runtime.onMessage.addListener((msg) => {
         if (msg.type === "OPPA_LISTEN_STATUS") {
@@ -257,11 +272,13 @@ document.addEventListener("DOMContentLoaded", () => {
                 stopListening();
             }
             if (msg.status === "ready_to_listen") {
+                showMainContent();
                 startListening();
             }
         }
 
         if (msg.type === "OPPA_SPEECH_START") {
+            showMainContent();
             stopListening();
             startSpeaking();
             speech?.classList.remove('hidden');
@@ -276,11 +293,41 @@ document.addEventListener("DOMContentLoaded", () => {
     });
 
     chrome.runtime.sendMessage({ type: "OPPA_POPUP_OPENED" }, (response) => {
-        clearTimeout(timeoutId);
-        loading?.classList.add('hidden');
-        startChat?.classList.remove('hidden');
-        if (response?.status === "ready_to_listen") {
-            startListening();
+        if (response?.status === "ready_to_listen" || response?.status === "speaking") {
+            showMainContent();
+            if (response.status === "ready_to_listen") {
+                startListening();
+            } else {
+                startSpeaking();
+            }
         }
+        // If not ready, we keep skeleton and wait for message or timeout
     });
 });
+
+recognition.onerror = (event: any) => {
+    stopProcessingState();
+    visualizer?.classList.remove('listening');
+    stopVisualizer();
+    console.error("Recognition error:", event.error);
+
+    if (textOutput) {
+        textOutput.classList.remove("text-white");
+        textOutput.classList.add("text-red-400");
+
+        if (event.error === 'network') {
+            textOutput.textContent = "Network error. Please check your connection.";
+            if (!isInitialized) {
+                showNetworkError();
+            }
+        } else if (event.error === 'not-allowed' || event.error === 'service-not-allowed') {
+            textOutput.textContent = "Microphone access denied. Please allow permissions.";
+        } else if (event.error === 'no-speech') {
+            textOutput.textContent = "I didn't hear anything. Try again?";
+            textOutput.classList.replace("text-red-400", "text-amber-200");
+        } else {
+            textOutput.textContent = `Error: ${event.error}. Please try again.`;
+        }
+    }
+    retryBtn?.classList.remove('hidden');
+};

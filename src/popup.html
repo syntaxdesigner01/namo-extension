@@ -32,12 +32,75 @@
             content: "";
             animation: dots 1.5s steps(1) infinite;
         }
+
+        /* Skeleton Shimmer Effect */
+        @keyframes shimmer {
+            0% {
+                background-position: -200% 0;
+            }
+
+            100% {
+                background-position: 200% 0;
+            }
+        }
+
+        .skeleton {
+            background: linear-gradient(90deg, #1a1a1a 25%, #2a2a2a 50%, #1a1a1a 75%);
+            background-size: 200% 100%;
+            animation: shimmer 1.5s infinite;
+        }
+
+        .skeleton-circle {
+            width: 112px;
+            height: 112px;
+            border-radius: 50%;
+        }
+
+        .skeleton-text {
+            width: 150px;
+            height: 20px;
+            border-radius: 4px;
+        }
     </style>
 </head>
 
-<body>
-    <section class="flex flex-col justify-center items-center w-full h-full bg-black">
-        <!-- <img src="../asserts/oppa.png" alt="" srcset="" class="w-28 animate-bounce-slow ease-in-out"> -->
+<body class="bg-black">
+    <!-- Skeleton Loader Section -->
+    <section id="skeleton-loader" class="flex flex-col justify-center items-center w-full h-full bg-black p-4">
+        <div class="skeleton skeleton-circle mb-8"></div>
+        <div class="skeleton skeleton-text mb-4"></div>
+        <div class="skeleton skeleton-text w-24 mb-6"></div>
+        <p class="text-amber-200/40 text-sm font-medium animate-pulse">Initializing Oppa<span class="processing"></span>
+        </p>
+    </section>
+
+    <!-- Network Error Section (Hidden by default) -->
+    <section id="network-error" style="display: none;"
+        class="flex flex-col justify-center items-center w-full h-full bg-black p-6 text-center">
+        <div class="mb-6 text-red-500/80">
+            <svg xmlns="http://www.w3.org/2000/svg" width="64" height="64" viewBox="0 0 24 24" fill="none"
+                stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round">
+                <line x1="1" y1="1" x2="23" y2="23"></line>
+                <path d="M16.72 11.06A10.94 10.94 0 0 1 19 12.55"></path>
+                <path d="M5 12.55a10.94 10.94 0 0 1 5.17-2.39"></path>
+                <path d="M10.71 5.05A16 16 0 0 1 22.58 9"></path>
+                <path d="M1.42 9a15.91 15.91 0 0 1 4.7-2.88"></path>
+                <path d="M8.53 16.11a6 6 0 0 1 6.95 0"></path>
+                <line x1="12" y1="20" x2="12.01" y2="20"></line>
+            </svg>
+        </div>
+        <h2 class="text-red-400 text-lg font-bold mb-2">Network Error</h2>
+        <p class="text-gray-400 text-sm mb-6">I'm having trouble connecting. Please check your internet or try again.
+        </p>
+        <button id="network-retry-btn"
+            class="px-6 py-2 bg-red-600/20 text-red-400 border border-red-500/30 rounded-full text-sm font-bold hover:bg-red-600/30 transition-all">
+            Retry Connection
+        </button>
+    </section>
+
+    <!-- Main Content Section (Hidden by default via style to avoid Tailwind conflict) -->
+    <section id="main-content" style="display: none;"
+        class="flex flex-col justify-center items-center w-full h-full bg-black">
         <section>
             <div id="visualizer" class="group relative flex justify-center items-center cursor-pointer">
                 <div
@@ -53,31 +116,18 @@
             </div>
         </section>
 
-
-        <div id="loading" class="hidden my-4">
-            <svg class="animate-spin h-6 w-6 text-amber-600" xmlns="http://www.w3.org/2000/svg" fill="none"
-                viewBox="0 0 24 24">
-                <circle class="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" stroke-width="4"></circle>
-                <path class="opacity-75" fill="currentColor"
-                    d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4zm2 5.291A7.962 7.962 0 014 12H0c0 3.042 1.135 5.824 3 7.938l3-2.647z">
-                </path>
-            </svg>
-        </div>
-
-
         <section class="mt-4 flex flex-col items-center">
-            <p id="text-output" class="text-md text-white px-2 py-1 font-semibold capitalize "></p>
+            <p id="text-output" class="text-md text-white px-2 py-1 font-semibold capitalize text-center"></p>
             <button id="retry-btn"
-                class="hidden mt-2 px-4 py-1 bg-red-600 text-white text-sm font-medium rounded hover:bg-red-700 transition-colors">
+                class="hidden mt-2 px-4 py-1 bg-amber-600 text-white text-sm font-medium rounded hover:bg-amber-700 transition-colors shadow-lg">
                 Tap Oppa!
             </button>
         </section>
     </section>
 
-
-    <section class="text-center font-extrabold text-red-900 absolute bottom-1.5 left-1/2 transform -translate-x-1/2">
-        <p id="status-text" class="text-center font-extrabold text-red-900 mt-4">Namo v-0.0.1</p>
-        <p>Built by Akpan Joseph</p>
+    <section
+        class="text-center font-extrabold text-white/40 absolute bottom-1.5 left-1/2 transform -translate-x-1/2 text-[10px] w-full">
+        <p id="status-text">Oppa Assistant v-0.0.1</p>
     </section>
 
     <script type="module" src="./popup.ts"></script>
