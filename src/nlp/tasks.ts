@@ -5,6 +5,7 @@ import { readTabById, readFromIndex, stopReadingInternal } from "../services/rea
 import { controlSpotify, openSpotifyAndPlay } from "../services/spotify.ts";
 import { fetchWeather } from "../services/weather.ts";
 import { searchAndRead } from "../services/duckduckgo.ts";
+import { calculate } from "../services/math.ts";
 import { latestNews, newsState, readingState } from "../state.ts";
 import type { Task } from "../types.ts";
 
@@ -377,27 +378,8 @@ export const TASK_REGISTRY: Task[] = [
     {
         intent: "CALCULATE",
         minConfidence: 2,
-        action: ({ query }) => {
-            const mathQuery = query
-                .toLowerCase()
-                .replace(/plus/g, "+")
-                .replace(/minus/g, "-")
-                .replace(/times/g, "*")
-                .replace(/multiplied by/g, "*")
-                .replace(/divided by/g, "/")
-                .replace(/[^0-9+\-*/.()]/g, "");
-
-            try {
-                // eslint-disable-next-line no-new-func
-                const result = new Function("return " + mathQuery)();
-                if (isFinite(result)) {
-                    speak(`The answer is ${result}`);
-                } else {
-                    speak("I couldn't calculate that.");
-                }
-            } catch (e) {
-                speak("Sorry, I didn't understand the math expression.");
-            }
+        action: async ({ query }) => {
+            await calculate(query);
         },
     },
     {
