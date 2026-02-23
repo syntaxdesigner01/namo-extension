@@ -13,6 +13,7 @@ recognition.continuous = false;
 recognition.interimResults = false;
 
 let isListening = false;
+let isStartingListening = false;
 let audioContext: AudioContext | null = null;
 let analyser: AnalyserNode | null = null;
 let dataArray: Uint8Array<ArrayBuffer> | null = null;
@@ -21,6 +22,7 @@ let stream: MediaStream | null = null;
 let animationId: number | null = null;
 let isVisualizerActive = false;
 let processingTimeout: number | null = null;
+let startGuardTimeout: number | null = null;
 
 
 /**
@@ -44,20 +46,35 @@ function stopListening() {
 }
 
 async function startListening() {
-    if (!isListening) {
-        try {
-            // Ensure visualizer/stream is ready before recognition to avoid hardware conflicts
-            await setupVisualizer();
-            recognition.start();
-            isListening = true;
-        } catch (e) {
-            console.error("Failed to start recognition:", e);
-            isListening = false;
-            if (textOutput) {
-                textOutput.textContent = "Could not access microphone.";
-                textOutput.classList.add("text-red-400");
+    if (isListening || isStartingListening) {
+        return;
+    }
+
+    isStartingListening = true;
+    try {
+        recognition.start();
+
+        // If onstart is not fired, recover from a stuck startup state.
+        if (startGuardTimeout) clearTimeout(startGuardTimeout);
+        startGuardTimeout = window.setTimeout(() => {
+            if (!isListening) {
+                isStartingListening = false;
+                if (textOutput) {
+                    textOutput.textContent = "Mic did not start. Tap to retry.";
+                    textOutput.classList.remove("text-white", "text-amber-200");
+                    textOutput.classList.add("text-red-400");
+                }
                 retryBtn?.classList.remove('hidden');
             }
+        }, 3000);
+    } catch (e) {
+        console.error("Failed to start recognition:", e);
+        isListening = false;
+        isStartingListening = false;
+        if (textOutput) {
+            textOutput.textContent = "Could not access microphone.";
+            textOutput.classList.add("text-red-400");
+            retryBtn?.classList.remove('hidden');
         }
     }
 }
@@ -161,9 +178,17 @@ recognition.onresult = (event: any) => {
 };
 
 recognition.onstart = () => {
+    if (startGuardTimeout) {
+        clearTimeout(startGuardTimeout);
+        startGuardTimeout = null;
+    }
+    isStartingListening = false;
     isListening = true;
     showMainContent();
     stopProcessingState();
+    setupVisualizer().catch((err) => {
+        console.warn("Visualizer setup skipped:", err);
+    });
     updateUIVisuals('listening');
     if (textOutput) {
         textOutput.textContent = "Listening...";
@@ -197,6 +222,11 @@ recognition.onspeechend = () => {
 };
 
 recognition.onend = () => {
+    if (startGuardTimeout) {
+        clearTimeout(startGuardTimeout);
+        startGuardTimeout = null;
+    }
+    isStartingListening = false;
     isListening = false;
     visualizer?.classList.remove('listening');
     stopVisualizer();
@@ -340,10 +370,15 @@ document.addEventListener("DOMContentLoaded", () => {
 });
 
 recognition.onerror = (event: any) => {
+    if (startGuardTimeout) {
+        clearTimeout(startGuardTimeout);
+        startGuardTimeout = null;
+    }
     stopProcessingState();
     visualizer?.classList.remove('listening');
     stopVisualizer();
     isListening = false;
+    isStartingListening = false;
     console.error("Recognition error:", event.error);
 
     if (textOutput) {
