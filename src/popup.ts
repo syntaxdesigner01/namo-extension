@@ -43,19 +43,27 @@ function stopListening() {
     }
 }
 
-function startListening() {
+async function startListening() {
     if (!isListening) {
         try {
+            // Ensure visualizer/stream is ready before recognition to avoid hardware conflicts
+            await setupVisualizer();
             recognition.start();
             isListening = true;
         } catch (e) {
             console.error("Failed to start recognition:", e);
             isListening = false;
+            if (textOutput) {
+                textOutput.textContent = "Could not access microphone.";
+                textOutput.classList.add("text-red-400");
+                retryBtn?.classList.remove('hidden');
+            }
         }
     }
 }
 
 async function setupVisualizer() {
+    if (isVisualizerActive && stream) return; // Prevent double-requesting hardware
     isVisualizerActive = true;
     try {
         const localStream = await navigator.mediaDevices.getUserMedia({ audio: true });
@@ -79,6 +87,7 @@ async function setupVisualizer() {
         visualize();
     } catch (err) {
         console.error("Visualizer setup failed:", err);
+        isVisualizerActive = false;
     }
 }
 
@@ -94,7 +103,8 @@ function visualize() {
         sum += dataArray[i];
     }
     const average = sum / dataArray.length;
-    const scale = 1 + (average / 255) * 0.5;
+    // Smoother scaling
+    const scale = 1 + (average / 150) * 0.4;
 
     visualizer.style.transform = `scale(${scale})`;
 }
@@ -154,11 +164,13 @@ recognition.onstart = () => {
     isListening = true;
     showMainContent();
     stopProcessingState();
-    visualizer?.classList.add('listening');
-    setupVisualizer();
+    updateUIVisuals('listening');
     if (textOutput) {
         textOutput.textContent = "Listening...";
+        textOutput.classList.remove("text-red-400", "text-amber-200");
+        textOutput.classList.add("text-white");
     }
+    retryBtn?.classList.add('hidden');
 };
 
 recognition.onspeechstart = () => {
@@ -216,12 +228,16 @@ if (retryBtn) {
     });
 }
 
-const mainContent = document.getElementById('main-content');
-const skeletonLoader = document.getElementById('skeleton-loader');
+const mainContent = document.getElementById('main-content') || document.getElementById('Start-chat');
+const skeletonLoader = document.getElementById('skeleton-loader') || document.getElementById('loading');
 const networkError = document.getElementById('network-error');
 const networkRetryBtn = document.getElementById('network-retry-btn');
+const speechVisual = document.getElementById('speech');
+const listenVisual = document.getElementById('listen');
+
 let initTimeoutId: number | null = null;
 let isInitialized = false;
+let speechEndTimeout: number | null = null;
 
 function showMainContent() {
     if (isInitialized) return;
@@ -254,10 +270,25 @@ if (networkRetryBtn) {
     });
 }
 
-document.addEventListener("DOMContentLoaded", () => {
-    const speech = document.getElementById('speech');
-    const listen = document.getElementById('listen');
+function updateUIVisuals(state: 'speaking' | 'listening' | 'idle') {
+    if (state === 'speaking') {
+        visualizer?.classList.add('speaking');
+        visualizer?.classList.remove('listening');
+        speechVisual?.classList.remove('hidden');
+        listenVisual?.classList.add('hidden');
+    } else if (state === 'listening') {
+        visualizer?.classList.remove('speaking');
+        visualizer?.classList.add('listening');
+        speechVisual?.classList.add('hidden');
+        listenVisual?.classList.remove('hidden');
+    } else {
+        visualizer?.classList.remove('speaking', 'listening');
+        speechVisual?.classList.add('hidden');
+        listenVisual?.classList.remove('hidden');
+    }
+}
 
+document.addEventListener("DOMContentLoaded", () => {
     // Show skeleton initially
     if (skeletonLoader) skeletonLoader.style.display = 'flex';
     if (mainContent) mainContent.style.display = 'none';
@@ -270,25 +301,28 @@ document.addEventListener("DOMContentLoaded", () => {
         if (msg.type === "OPPA_LISTEN_STATUS") {
             if (msg.status === "speaking") {
                 stopListening();
+                updateUIVisuals('speaking');
             }
             if (msg.status === "ready_to_listen") {
                 showMainContent();
-                startListening();
+                if (speechEndTimeout) clearTimeout(speechEndTimeout);
+                // 1000ms delay to ensure hardware is fully released by TTS
+                speechEndTimeout = window.setTimeout(() => {
+                    startListening();
+                }, 1000);
             }
         }
 
         if (msg.type === "OPPA_SPEECH_START") {
             showMainContent();
             stopListening();
+            updateUIVisuals('speaking');
             startSpeaking();
-            speech?.classList.remove('hidden');
-            listen?.classList.add('hidden');
         }
         if (msg.type === "OPPA_SPEECH_END") {
             stopSpeaking();
-            speech?.classList.add('hidden');
-            listen?.classList.remove('hidden');
-            startListening();
+            updateUIVisuals('listening');
+            // Logic moved entirely to ready_to_listen to avoid double-starting
         }
     });
 
@@ -296,12 +330,12 @@ document.addEventListener("DOMContentLoaded", () => {
         if (response?.status === "ready_to_listen" || response?.status === "speaking") {
             showMainContent();
             if (response.status === "ready_to_listen") {
+                // If already greeted, we can skip the wait
                 startListening();
             } else {
-                startSpeaking();
+                updateUIVisuals('speaking');
             }
         }
-        // If not ready, we keep skeleton and wait for message or timeout
     });
 });
 
@@ -309,6 +343,7 @@ recognition.onerror = (event: any) => {
     stopProcessingState();
     visualizer?.classList.remove('listening');
     stopVisualizer();
+    isListening = false;
     console.error("Recognition error:", event.error);
 
     if (textOutput) {
@@ -323,7 +358,13 @@ recognition.onerror = (event: any) => {
         } else if (event.error === 'not-allowed' || event.error === 'service-not-allowed') {
             textOutput.textContent = "Microphone access denied. Please allow permissions.";
         } else if (event.error === 'no-speech') {
-            textOutput.textContent = "I didn't hear anything. Try again?";
+            if (!isInitialized) {
+                // One-time retry if it happens during greeting
+                console.warn("No speech during init, retrying...");
+                startListening();
+                return;
+            }
+            textOutput.textContent = "No speech detected. Try again.";
             textOutput.classList.replace("text-red-400", "text-amber-200");
         } else {
             textOutput.textContent = `Error: ${event.error}. Please try again.`;
