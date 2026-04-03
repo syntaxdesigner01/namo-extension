@@ -232,6 +232,21 @@ recognition.onend = () => {
     stopVisualizer();
 };
 
+recognition.onerror = (event: any) => {
+    stopProcessingState();
+    visualizer?.classList.remove('listening');
+    stopVisualizer();
+    console.error("Recognition error:", event.error);
+    if (event.error === 'not-allowed' || event.error === 'service-not-allowed') {
+        showPermissionScreen(true);
+    } else if (event.error === 'no-speech') {
+        if (textOutput) {
+            textOutput.textContent = "No speech detected. Try again.";
+        }
+        retryBtn?.classList.remove('hidden');
+    }
+};
+
 // Ensure the element exists before adding event listeners or calling functions.
 if (visualizer) {
     visualizer.addEventListener('click', () => {
@@ -258,74 +273,38 @@ if (retryBtn) {
     });
 }
 
-const mainContent = document.getElementById('main-content') || document.getElementById('Start-chat');
-const skeletonLoader = document.getElementById('skeleton-loader') || document.getElementById('loading');
-const networkError = document.getElementById('network-error');
-const networkRetryBtn = document.getElementById('network-retry-btn');
-const speechVisual = document.getElementById('speech');
-const listenVisual = document.getElementById('listen');
+// ===============================
+// PERMISSION SCREEN
+// ===============================
+const permissionScreen = document.getElementById('permission-screen');
+const allowMicBtn = document.getElementById('allow-mic-btn');
+const blockedMsg = document.getElementById('blocked-msg');
 
-let initTimeoutId: number | null = null;
-let isInitialized = false;
-let speechEndTimeout: number | null = null;
-
-function showMainContent() {
-    if (isInitialized) return;
-    isInitialized = true;
-    if (initTimeoutId) clearTimeout(initTimeoutId);
-
-    // Smooth transition
-    setTimeout(() => {
-        if (skeletonLoader) skeletonLoader.style.display = 'none';
-        if (networkError) networkError.style.display = 'none';
-        if (mainContent) mainContent.style.display = 'flex';
-    }, 300);
-}
-
-function showNetworkError() {
-    if (initTimeoutId) clearTimeout(initTimeoutId);
-    if (skeletonLoader) skeletonLoader.style.display = 'none';
-    if (mainContent) mainContent.style.display = 'none';
-    if (networkError) networkError.style.display = 'flex';
-}
-
-if (networkRetryBtn) {
-    networkRetryBtn.addEventListener('click', () => {
-        if (networkError) networkError.style.display = 'none';
-        if (skeletonLoader) skeletonLoader.style.display = 'flex';
-
-        // Restart init timeout
-        initTimeoutId = window.setTimeout(showNetworkError, 120000); // 2 minutes
-        startListening();
-    });
-}
-
-function updateUIVisuals(state: 'speaking' | 'listening' | 'idle') {
-    if (state === 'speaking') {
-        visualizer?.classList.add('speaking');
-        visualizer?.classList.remove('listening');
-        speechVisual?.classList.remove('hidden');
-        listenVisual?.classList.add('hidden');
-    } else if (state === 'listening') {
-        visualizer?.classList.remove('speaking');
-        visualizer?.classList.add('listening');
-        speechVisual?.classList.add('hidden');
-        listenVisual?.classList.remove('hidden');
+function showPermissionScreen(blocked: boolean) {
+    permissionScreen?.classList.remove('hidden');
+    permissionScreen?.classList.add('flex');
+    if (blocked) {
+        allowMicBtn?.classList.add('hidden');
+        blockedMsg?.classList.remove('hidden');
     } else {
-        visualizer?.classList.remove('speaking', 'listening');
-        speechVisual?.classList.add('hidden');
-        listenVisual?.classList.remove('hidden');
+        allowMicBtn?.classList.remove('hidden');
+        blockedMsg?.classList.add('hidden');
     }
 }
 
-document.addEventListener("DOMContentLoaded", () => {
-    // Show skeleton initially
-    if (skeletonLoader) skeletonLoader.style.display = 'flex';
-    if (mainContent) mainContent.style.display = 'none';
-    if (networkError) networkError.style.display = 'none';
+function hidePermissionScreen() {
+    permissionScreen?.classList.add('hidden');
+    permissionScreen?.classList.remove('flex');
+}
 
-    // Set a 2-minute timeout for network issues
-    initTimeoutId = window.setTimeout(showNetworkError, 120000);
+document.addEventListener("DOMContentLoaded", async () => {
+    const startChat = document.getElementById('Start-chat');
+    const speech = document.getElementById('speech');
+    const listen = document.getElementById('listen');
+    const loading = document.getElementById('loading');
+
+    startChat?.classList.add('hidden');
+    loading?.classList.remove('hidden');
 
     chrome.runtime.onMessage.addListener((msg) => {
         if (msg.type === "OPPA_LISTEN_STATUS") {
@@ -351,59 +330,67 @@ document.addEventListener("DOMContentLoaded", () => {
         }
         if (msg.type === "OPPA_SPEECH_END") {
             stopSpeaking();
-            updateUIVisuals('listening');
-            // Logic moved entirely to ready_to_listen to avoid double-starting
+            speech?.classList.add('hidden');
+            listen?.classList.remove('hidden');
+            // UI only. startListening() is triggered solely by
+            // OPPA_LISTEN_STATUS: ready_to_listen — the single authoritative
+            // signal from speak()'s onEvent microtask.
         }
     });
 
-    chrome.runtime.sendMessage({ type: "OPPA_POPUP_OPENED" }, (response) => {
-        if (response?.status === "ready_to_listen" || response?.status === "speaking") {
-            showMainContent();
-            if (response.status === "ready_to_listen") {
-                // If already greeted, we can skip the wait
+    function connectToBackground() {
+        const timeoutId = setTimeout(() => {
+            loading?.classList.add('hidden');
+            startChat?.classList.remove('hidden');
+            console.warn('Background script did not respond within timeout period.');
+        }, 5000);
+
+        chrome.runtime.sendMessage({ type: "OPPA_POPUP_OPENED" }, (response) => {
+            clearTimeout(timeoutId);
+            loading?.classList.add('hidden');
+            startChat?.classList.remove('hidden');
+            if (response?.status === "ready_to_listen") {
                 startListening();
-            } else {
-                updateUIVisuals('speaking');
             }
+        });
+    }
+
+    // Check microphone permission before connecting to background.
+    // Differentiates: granted (proceed), prompt (show allow screen), denied (show blocked screen).
+    let micGranted = false;
+    try {
+        const result = await navigator.permissions.query({ name: 'microphone' as PermissionName });
+        micGranted = result.state === 'granted';
+        if (result.state === 'denied') {
+            loading?.classList.add('hidden');
+            showPermissionScreen(true);
+        } else if (result.state === 'prompt') {
+            loading?.classList.add('hidden');
+            showPermissionScreen(false);
         }
+        // Re-check if the user grants permission from the browser's own prompt
+        result.addEventListener('change', () => {
+            if (result.state === 'granted') {
+                hidePermissionScreen();
+                loading?.classList.remove('hidden');
+                connectToBackground();
+            } else if (result.state === 'denied') {
+                showPermissionScreen(true);
+            }
+        });
+    } catch {
+        // Permissions API unavailable — proceed and let recognition.onerror handle it
+        micGranted = true;
+    }
+
+    allowMicBtn?.addEventListener('click', () => {
+        // Open the permission page in a new tab. The popup would close if
+        // getUserMedia triggered a browser dialog here (focus loss closes popups).
+        // The permissions.query change listener above handles re-connecting once granted.
+        chrome.tabs.create({ url: chrome.runtime.getURL('src/permission.html') });
     });
+
+    if (micGranted) {
+        connectToBackground();
+    }
 });
-
-recognition.onerror = (event: any) => {
-    if (startGuardTimeout) {
-        clearTimeout(startGuardTimeout);
-        startGuardTimeout = null;
-    }
-    stopProcessingState();
-    visualizer?.classList.remove('listening');
-    stopVisualizer();
-    isListening = false;
-    isStartingListening = false;
-    console.error("Recognition error:", event.error);
-
-    if (textOutput) {
-        textOutput.classList.remove("text-white");
-        textOutput.classList.add("text-red-400");
-
-        if (event.error === 'network') {
-            textOutput.textContent = "Network error. Please check your connection.";
-            if (!isInitialized) {
-                showNetworkError();
-            }
-        } else if (event.error === 'not-allowed' || event.error === 'service-not-allowed') {
-            textOutput.textContent = "Microphone access denied. Please allow permissions.";
-        } else if (event.error === 'no-speech') {
-            if (!isInitialized) {
-                // One-time retry if it happens during greeting
-                console.warn("No speech during init, retrying...");
-                startListening();
-                return;
-            }
-            textOutput.textContent = "No speech detected. Try again.";
-            textOutput.classList.replace("text-red-400", "text-amber-200");
-        } else {
-            textOutput.textContent = `Error: ${event.error}. Please try again.`;
-        }
-    }
-    retryBtn?.classList.remove('hidden');
-};

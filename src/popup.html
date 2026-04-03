@@ -130,6 +130,42 @@
         <p id="status-text">Oppa Assistant v-0.0.1</p>
     </section>
 
+    <!-- Permission overlay — shown when microphone access is not yet granted -->
+    <div id="permission-screen"
+        class="hidden absolute inset-0 z-50 flex-col justify-center items-center bg-black px-6 text-center">
+
+        <!-- Mic icon -->
+        <div class="mb-4 h-16 w-16 rounded-full flex items-center justify-center bg-white/10 border border-white/20 shadow-lg">
+            <svg class="w-8 h-8 text-amber-400" fill="none" stroke="currentColor" stroke-width="1.5"
+                viewBox="0 0 24 24">
+                <path stroke-linecap="round" stroke-linejoin="round"
+                    d="M12 1a3 3 0 0 0-3 3v8a3 3 0 0 0 6 0V4a3 3 0 0 0-3-3z" />
+                <path stroke-linecap="round" stroke-linejoin="round"
+                    d="M19 10v2a7 7 0 0 1-14 0v-2" />
+                <line stroke-linecap="round" x1="12" y1="19" x2="12" y2="23" />
+                <line stroke-linecap="round" x1="8" y1="23" x2="16" y2="23" />
+            </svg>
+        </div>
+
+        <p class="text-amber-50 font-semibold text-sm tracking-wide mb-1">oppa</p>
+        <h2 class="text-white font-semibold text-base mb-2">Microphone Access Needed</h2>
+        <p class="text-white/50 text-xs mb-5 leading-relaxed">
+            Oppa listens for your voice commands.<br>Audio is processed locally — nothing is sent to the cloud.
+        </p>
+
+        <!-- Allow button -->
+        <button id="allow-mic-btn"
+            class="w-full py-2 bg-amber-500 hover:bg-amber-400 active:bg-amber-600 text-black text-sm font-bold rounded-lg transition-colors mb-3">
+            Allow Microphone
+        </button>
+
+        <!-- Shown only when the browser has permanently blocked the mic -->
+        <p id="blocked-msg" class="hidden text-white/40 text-xs leading-relaxed">
+            Microphone is blocked. Click the lock icon in your browser address bar and set Microphone to
+            <span class="text-amber-400">Allow</span>, then reopen Oppa.
+        </p>
+    </div>
+
     <script type="module" src="./popup.ts"></script>
 </body>
 
