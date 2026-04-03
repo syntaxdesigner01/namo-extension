@@ -1,92 +1,309 @@
-<!-- c:\Users\syntax\Documents\projects\namo-extension\src\permission.html -->
 <!DOCTYPE html>
 <html lang="en">
 
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>Microphone Permission</title>
+    <title>Microphone Permission — Namo AI</title>
     <style>
-        body {
-            font-family: sans-serif;
-            padding: 15px;
-            font-size: 12px;
-            text-align: center;
-            background-color: #f9f9f9;
-            margin: 0;
+        *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
+
+        html, body {
             height: 100%;
+        }
+
+        body {
+            font-family: 'Google Sans', 'Segoe UI', system-ui, -apple-system, sans-serif;
+            background: #f1f3f4;
+            display: flex;
+            align-items: stretch;
+            justify-content: center;
+            color: #202124;
+        }
+
+        /* ── Card ── */
+        .card {
+            background: #fff;
+            border-radius: 0;
+            padding: 40px 36px 32px;
+            width: 100%;
+            max-width: 420px;
+            min-height: 100vh;
             display: flex;
             flex-direction: column;
-            justify-content: center;
+            text-align: center;
         }
 
-        h3 {
-            margin: 0 0 10px 0;
-            color: #333;
-        }
-
-        p {
-            margin: 0 0 10px 0;
-            color: #555;
-        }
-
-        ul {
-            text-align: left;
-            padding-left: 20px;
-            margin: 0 0 15px 0;
-            color: #555;
-        }
-
-        li {
-            margin-bottom: 5px;
-        }
-
-        .buttons {
+        /* ── Header ── */
+        .header {
             display: flex;
+            align-items: center;
             justify-content: center;
+            gap: 10px;
+            margin-bottom: 28px;
+        }
+
+        .app-logo {
+            width: 44px;
+            height: 44px;
+            border-radius: 12px;
+            background: #000;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            font-size: 18px;
+            font-weight: 700;
+            color: #fbbf24;
+            letter-spacing: -0.5px;
+            flex-shrink: 0;
+        }
+
+        .app-meta {
+            text-align: left;
+        }
+
+        .app-name {
+            font-size: 14px;
+            font-weight: 600;
+            color: #202124;
+            line-height: 1.2;
+        }
+
+        .app-domain {
+            font-size: 11px;
+            color: #5f6368;
+        }
+
+        /* ── Divider ── */
+        .divider {
+            height: 1px;
+            background: #e8eaed;
+            margin: 0 -36px 28px;
+        }
+
+        /* ── Title ── */
+        .title {
+            font-size: 22px;
+            font-weight: 400;
+            color: #202124;
+            line-height: 1.35;
+            margin-bottom: 24px;
+        }
+
+        .title strong {
+            font-weight: 600;
+        }
+
+        /* ── Permission list ── */
+        .perm-list {
+            list-style: none;
+            text-align: left;
+            margin-bottom: 20px;
+            border: 1px solid #e8eaed;
+            border-radius: 12px;
+            overflow: hidden;
+        }
+
+        .perm-list li {
+            display: flex;
+            align-items: center;
+            gap: 14px;
+            padding: 14px 16px;
+            background: #fff;
+        }
+
+        .perm-list li + li {
+            border-top: 1px solid #f1f3f4;
+        }
+
+        .perm-icon {
+            width: 40px;
+            height: 40px;
+            border-radius: 50%;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            flex-shrink: 0;
+        }
+
+        .perm-icon.blue  { background: #e8f0fe; }
+        .perm-icon.green { background: #e6f4ea; }
+        .perm-icon.amber { background: #fef3c7; }
+
+        .perm-icon svg { width: 20px; height: 20px; }
+
+        .perm-text strong {
+            display: block;
+            font-size: 13px;
+            font-weight: 500;
+            color: #202124;
+            margin-bottom: 1px;
+        }
+
+        .perm-text span {
+            font-size: 12px;
+            color: #5f6368;
+            line-height: 1.4;
+        }
+
+        /* ── Privacy note ── */
+        .privacy-note {
+            font-size: 11.5px;
+            color: #80868b;
+            line-height: 1.55;
+            margin-bottom: 28px;
+            text-align: left;
+        }
+
+        /* ── Buttons ── */
+        .btn-row {
+            display: flex;
+            flex-direction: column;
             gap: 10px;
         }
 
-        button {
-            padding: 8px 15px;
-            border: none;
-            border-radius: 4px;
-            cursor: pointer;
-            font-weight: bold;
-        }
-
         #grant-btn {
-            background-color: #4CAF50;
-            color: white;
+            background: #1a73e8;
+            color: #fff;
+            border: none;
+            border-radius: 24px;
+            padding: 13px 24px;
+            font-size: 14px;
+            font-weight: 500;
+            cursor: pointer;
+            font-family: inherit;
+            letter-spacing: .01em;
+            transition: background .15s, box-shadow .15s;
         }
 
-        #grant-btn:hover {
-            background-color: #45a049;
+        #grant-btn:hover:not(:disabled) {
+            background: #1765cc;
+            box-shadow: 0 1px 4px rgba(0,0,0,.2);
+        }
+
+        #grant-btn:disabled {
+            background: #dadce0;
+            color: #80868b;
+            cursor: default;
         }
 
         #deny-btn {
-            background-color: #f44336;
-            color: white;
+            background: transparent;
+            color: #1a73e8;
+            border: 1px solid #dadce0;
+            border-radius: 24px;
+            padding: 12px 24px;
+            font-size: 14px;
+            font-weight: 500;
+            cursor: pointer;
+            font-family: inherit;
+            letter-spacing: .01em;
+            transition: background .15s, border-color .15s;
         }
 
         #deny-btn:hover {
-            background-color: #d32f2f;
+            background: #f8f9fa;
+            border-color: #bdc1c6;
+        }
+
+        /* ── Error state ── */
+        #error-msg {
+            display: none;
+            background: #fce8e6;
+            border-radius: 8px;
+            padding: 10px 14px;
+            font-size: 12px;
+            color: #c5221f;
+            text-align: left;
+            margin-bottom: 16px;
+            line-height: 1.5;
         }
     </style>
 </head>
 
 <body>
-    <h3>Allow Microphone Access</h3>
-    <p>Oppa needs access to your microphone to listen for the wake word.</p>
-    <ul>
-        <li>Audio is processed locally.</li>
-        <li>No voice data is sent to the cloud.</li>
-        <li>Privacy is our priority.</li>
-    </ul>
-    <div class="buttons">
-        <button id="grant-btn">Grant</button>
-        <button id="deny-btn">Deny</button>
+    <div class="card">
+
+        <!-- App header -->
+        <!-- <div class="header">
+            <div class="app-logo">N</div>
+            <div class="app-meta">
+                <p class="app-name">Namo AI</p>
+                <p class="app-domain">Chrome Extension</p>
+            </div>
+        </div> -->
+
+        <!-- <div class="divider"></div> -->
+
+        <!-- Title -->
+        <h1 class="title"><strong>Namo AI</strong> wants to access your microphone</h1>
+
+        <!-- Permission breakdown -->
+        <ul class="perm-list">
+            <li>
+                <div class="perm-icon blue">
+                    <svg fill="none" stroke="#1a73e8" stroke-width="1.8" viewBox="0 0 24 24">
+                        <path stroke-linecap="round" stroke-linejoin="round"
+                            d="M12 1a3 3 0 0 0-3 3v8a3 3 0 0 0 6 0V4a3 3 0 0 0-3-3z"/>
+                        <path stroke-linecap="round" stroke-linejoin="round"
+                            d="M19 10v2a7 7 0 0 1-14 0v-2"/>
+                        <line stroke-linecap="round" x1="12" y1="19" x2="12" y2="23"/>
+                        <line stroke-linecap="round" x1="8"  y1="23" x2="16" y2="23"/>
+                    </svg>
+                </div>
+                <div class="perm-text">
+                    <strong>Listen to your voice</strong>
+                    <span>Captures audio only while you speak to Oppa</span>
+                </div>
+            </li>
+            <li>
+                <div class="perm-icon green">
+                    <svg fill="none" stroke="#34a853" stroke-width="1.8" viewBox="0 0 24 24">
+                        <path stroke-linecap="round" stroke-linejoin="round"
+                            d="M9 12l2 2 4-4m5.618-4.016A11.955 11.955 0 0112 2.944a11.955 11.955 0 01-8.618 3.04A12.02 12.02 0 003 9c0 5.591 3.824 10.29 9 11.622 5.176-1.332 9-6.03 9-11.622 0-1.042-.133-2.052-.382-3.016z"/>
+                    </svg>
+                </div>
+                <div class="perm-text">
+                    <strong>Processed on your device</strong>
+                    <span>Voice data is never uploaded or stored</span>
+                </div>
+            </li>
+            <li>
+                <div class="perm-icon amber">
+                    <svg fill="none" stroke="#f59e0b" stroke-width="1.8" viewBox="0 0 24 24">
+                        <path stroke-linecap="round" stroke-linejoin="round"
+                            d="M15 12a3 3 0 11-6 0 3 3 0 016 0z"/>
+                        <path stroke-linecap="round" stroke-linejoin="round"
+                            d="M2.458 12C3.732 7.943 7.523 5 12 5c4.477 0 8.268 2.943 9.542 7-1.274 4.057-5.065 7-9.542 7-4.477 0-8.268-2.943-9.542-7z"/>
+                    </svg>
+                </div>
+                <div class="perm-text">
+                    <strong>You stay in control</strong>
+                    <span>Revoke access anytime from browser settings</span>
+                </div>
+            </li>
+        </ul>
+
+        <!-- Error message (shown on denial) -->
+        <div id="error-msg">
+            Permission denied. Click the lock icon <strong>&#x1F512;</strong> in your browser address bar,
+            set <strong>Microphone</strong> to <strong>Allow</strong>, then reopen Oppa.
+        </div>
+
+        <!-- Privacy note -->
+        <p class="privacy-note">
+            By clicking <strong>Allow</strong> you grant Namo AI microphone access for voice commands.
+            Namo AI will not record background audio or share data with third parties.
+        </p>
+
+        <!-- Actions -->
+        <div class="btn-row">
+            <button id="grant-btn">Allow</button>
+            <button id="deny-btn">Cancel</button>
+        </div>
+
     </div>
+
     <script type="module" src="./permission.ts"></script>
 </body>
 

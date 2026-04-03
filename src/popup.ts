@@ -195,12 +195,7 @@ recognition.onerror = (event: any) => {
     stopVisualizer();
     console.error("Recognition error:", event.error);
     if (event.error === 'not-allowed' || event.error === 'service-not-allowed') {
-        if (textOutput) {
-            textOutput.textContent = "Microphone access denied. Please allow permissions.";
-            textOutput.classList.remove("text-white");
-            textOutput.classList.add("text-red-500");
-        }
-        retryBtn?.classList.remove('hidden');
+        showPermissionScreen(true);
     } else if (event.error === 'no-speech') {
         if (textOutput) {
             textOutput.textContent = "No speech detected. Try again.";
@@ -235,7 +230,31 @@ if (retryBtn) {
     });
 }
 
-document.addEventListener("DOMContentLoaded", () => {
+// ===============================
+// PERMISSION SCREEN
+// ===============================
+const permissionScreen = document.getElementById('permission-screen');
+const allowMicBtn = document.getElementById('allow-mic-btn');
+const blockedMsg = document.getElementById('blocked-msg');
+
+function showPermissionScreen(blocked: boolean) {
+    permissionScreen?.classList.remove('hidden');
+    permissionScreen?.classList.add('flex');
+    if (blocked) {
+        allowMicBtn?.classList.add('hidden');
+        blockedMsg?.classList.remove('hidden');
+    } else {
+        allowMicBtn?.classList.remove('hidden');
+        blockedMsg?.classList.add('hidden');
+    }
+}
+
+function hidePermissionScreen() {
+    permissionScreen?.classList.add('hidden');
+    permissionScreen?.classList.remove('flex');
+}
+
+document.addEventListener("DOMContentLoaded", async () => {
     const startChat = document.getElementById('Start-chat');
     const speech = document.getElementById('speech');
     const listen = document.getElementById('listen');
@@ -243,13 +262,6 @@ document.addEventListener("DOMContentLoaded", () => {
 
     startChat?.classList.add('hidden');
     loading?.classList.remove('hidden');
-
-    // Set a timeout to handle cases where the background script doesn't respond
-    const timeoutId = setTimeout(() => {
-        loading?.classList.add('hidden');
-        startChat?.classList.remove('hidden');
-        console.warn('Background script did not respond within timeout period.');
-    }, 5000); // 5 seconds timeout
 
     chrome.runtime.onMessage.addListener((msg) => {
         if (msg.type === "OPPA_LISTEN_STATUS") {
@@ -271,16 +283,65 @@ document.addEventListener("DOMContentLoaded", () => {
             stopSpeaking();
             speech?.classList.add('hidden');
             listen?.classList.remove('hidden');
-            startListening();
+            // UI only. startListening() is triggered solely by
+            // OPPA_LISTEN_STATUS: ready_to_listen — the single authoritative
+            // signal from speak()'s onEvent microtask.
         }
     });
 
-    chrome.runtime.sendMessage({ type: "OPPA_POPUP_OPENED" }, (response) => {
-        clearTimeout(timeoutId);
-        loading?.classList.add('hidden');
-        startChat?.classList.remove('hidden');
-        if (response?.status === "ready_to_listen") {
-            startListening();
+    function connectToBackground() {
+        const timeoutId = setTimeout(() => {
+            loading?.classList.add('hidden');
+            startChat?.classList.remove('hidden');
+            console.warn('Background script did not respond within timeout period.');
+        }, 5000);
+
+        chrome.runtime.sendMessage({ type: "OPPA_POPUP_OPENED" }, (response) => {
+            clearTimeout(timeoutId);
+            loading?.classList.add('hidden');
+            startChat?.classList.remove('hidden');
+            if (response?.status === "ready_to_listen") {
+                startListening();
+            }
+        });
+    }
+
+    // Check microphone permission before connecting to background.
+    // Differentiates: granted (proceed), prompt (show allow screen), denied (show blocked screen).
+    let micGranted = false;
+    try {
+        const result = await navigator.permissions.query({ name: 'microphone' as PermissionName });
+        micGranted = result.state === 'granted';
+        if (result.state === 'denied') {
+            loading?.classList.add('hidden');
+            showPermissionScreen(true);
+        } else if (result.state === 'prompt') {
+            loading?.classList.add('hidden');
+            showPermissionScreen(false);
         }
+        // Re-check if the user grants permission from the browser's own prompt
+        result.addEventListener('change', () => {
+            if (result.state === 'granted') {
+                hidePermissionScreen();
+                loading?.classList.remove('hidden');
+                connectToBackground();
+            } else if (result.state === 'denied') {
+                showPermissionScreen(true);
+            }
+        });
+    } catch {
+        // Permissions API unavailable — proceed and let recognition.onerror handle it
+        micGranted = true;
+    }
+
+    allowMicBtn?.addEventListener('click', () => {
+        // Open the permission page in a new tab. The popup would close if
+        // getUserMedia triggered a browser dialog here (focus loss closes popups).
+        // The permissions.query change listener above handles re-connecting once granted.
+        chrome.tabs.create({ url: chrome.runtime.getURL('src/permission.html') });
     });
+
+    if (micGranted) {
+        connectToBackground();
+    }
 });
